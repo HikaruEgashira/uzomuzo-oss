@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -281,21 +282,155 @@ func (c *Client) queryPage(ctx context.Context, ecosystem, name, pageToken strin
 	if trimmed := bytes.TrimLeft(raw, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
 		return nil, fmt.Errorf("osv query response was not a JSON object")
 	}
-	// A package with no advisories answers `{}`, so an absent vulns field is a
-	// clean answer. An explicit null is not: the schema has an array there, and
-	// caching it as "no advisories" would hide one for the cache's lifetime.
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	// The struct decode below folds key case, lets a repeated key replace the
+	// first and turns null into an empty value, so such a body could read as
+	// fewer advisories than OSV.dev sent ({"vulns":null}, {"id":null}, a range
+	// key spelled "TYPE"). It is an error, not an answer. A package with no
+	// advisories answers `{}`, so an absent vulns field stays a clean answer.
+	if err := checkUnambiguousKeys(raw); err != nil {
 		return nil, fmt.Errorf("osv query decode failed: %w", err)
-	}
-	if v, ok := fields["vulns"]; ok && string(bytes.TrimSpace(v)) == "null" {
-		return nil, fmt.Errorf("osv query response carried a null vulns field")
 	}
 	var out queryResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("osv query decode failed: %w", err)
 	}
 	return &out, nil
+}
+
+// readField is one key this package reads from a /v1/query body. nonNull marks
+// the keys whose null value would silently drop an advisory or a match (a
+// record without its ID, a range without its events, an unmaintained marker
+// turned into an empty string).
+type readField struct {
+	name    string
+	nonNull bool
+}
+
+// readFields lists every key queryPage and the range checks read, by parent
+// path (canonical key names joined by "/", arrays transparent) and folded key.
+// Only these keys are held to exact spelling, uniqueness and the null rule:
+// the OSV schema leaves database_specific and ecosystem_specific contents
+// open, so a key there that this package does not read must not fail a lookup.
+var readFields = func() map[string]readField {
+	byParent := map[string][]readField{
+		"":                             {{"vulns", true}, {"next_page_token", false}},
+		"vulns":                        {{"id", true}, {"aliases", false}, {"summary", false}, {"published", true}, {"withdrawn", false}, {"references", false}, {"database_specific", true}, {"affected", true}},
+		"vulns/references":             {{"type", false}, {"url", false}},
+		"vulns/database_specific":      {{"cwe_ids", true}},
+		"vulns/affected":               {{"package", true}, {"ranges", true}, {"versions", true}, {"database_specific", true}},
+		"vulns/affected/package":       {{"name", true}, {"ecosystem", true}},
+		"vulns/affected/ranges":        {{"type", true}, {"events", true}},
+		"vulns/affected/ranges/events": {{"introduced", true}, {"fixed", true}, {"last_affected", true}, {"limit", true}},
+		// RustSec sends "informational": null on every advisory that is not
+		// informational (RUSTSEC-2022-0042 does), so null here means "no marker".
+		"vulns/affected/database_specific": {{"informational", false}},
+	}
+	out := map[string]readField{}
+	for parent, fields := range byParent {
+		for _, f := range fields {
+			out[parent+"\x00"+foldKey(f.name)] = f
+		}
+	}
+	return out
+}()
+
+// checkUnambiguousKeys fails when the JSON document could decode to less than
+// OSV.dev sent. For each key in readFields, that is when its object holds it
+// twice or under two spellings encoding/json would fold together (the Kelvin
+// sign and the long s included), when it is spelled other than exactly (the
+// struct decode would accept it, the exact-key range checks would not), or
+// when a nonNull key is null. Keys this package does not read are not checked.
+// It walks tokens rather than decoding, so its cost is linear in the body size.
+func checkUnambiguousKeys(raw []byte) error {
+	type frame struct {
+		object    bool
+		expectKey bool
+		path      string
+		unread    bool // inside a value this package does not read: no checks
+		seen      map[string]bool
+		lastKey   string
+		lastField *readField
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var stack []*frame
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read JSON token: %w", err)
+		}
+		var top *frame
+		if len(stack) > 0 {
+			top = stack[len(stack)-1]
+		}
+		if key, isKey := tok.(string); isKey && top != nil && top.object && top.expectKey {
+			top.expectKey = false
+			top.lastKey = key
+			top.lastField = nil
+			if top.unread {
+				continue
+			}
+			folded := foldKey(key)
+			f, read := readFields[top.path+"\x00"+folded]
+			if !read {
+				continue
+			}
+			if key != f.name {
+				return fmt.Errorf("object key %q is a variant spelling of %q", key, f.name)
+			}
+			if top.seen[folded] {
+				return fmt.Errorf("object key %q is repeated", key)
+			}
+			top.seen[folded] = true
+			top.lastField = &f
+			continue
+		}
+		if tok == nil && top != nil && top.object && top.lastField != nil && top.lastField.nonNull {
+			return fmt.Errorf("object key %q is null", top.lastKey)
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			// The child's path is built from readFields names only, never from
+			// raw keys, so a key such as "vulns/affected" cannot pose as a path.
+			child := &frame{object: tok == json.Delim('{'), expectKey: tok == json.Delim('{'), seen: map[string]bool{}}
+			switch {
+			case top == nil:
+			case top.unread || (top.object && top.lastField == nil):
+				child.unread = true
+			case top.object:
+				child.path = strings.TrimPrefix(top.path+"/"+top.lastField.name, "/")
+			default:
+				child.path = top.path // array elements share the array's path
+			}
+			stack = append(stack, child)
+			continue
+		case json.Delim('}'), json.Delim(']'):
+			stack = stack[:len(stack)-1]
+		}
+		// A value (scalar, or a container just closed) ends a key/value pair.
+		if len(stack) > 0 && stack[len(stack)-1].object {
+			stack[len(stack)-1].expectKey = true
+		}
+	}
+}
+
+// foldKey maps s to one representative of its case-folding class, so two keys
+// share a result exactly when strings.EqualFold reports them equal.
+func foldKey(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		low := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < low {
+				low = f
+			}
+		}
+		b.WriteRune(low)
+	}
+	return b.String()
 }
 
 func (c *Client) resolvedBaseURL() string {
