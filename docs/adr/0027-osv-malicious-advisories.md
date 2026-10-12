@@ -161,6 +161,37 @@ two. It covers every dependency scanned, including entries a filter such as
   needs 1,188 queries in 36 seconds, npm/cli (b317f16c80df) 839 queries in 25
   seconds, with no failures. These are the OSV requests only, not a whole scan,
   where they run alongside the other lookups.
+- **Update 2026-10-12: one batch query first.** The bullet above is superseded
+  as follows. One `POST /v1/querybatch` per 1,000 distinct packages comes first,
+  then one `POST /v1/query` (paginated) for each package the batch lists an
+  advisory for. The batch returns advisory IDs only, so it answers "no
+  advisory" for most packages and the full records still come from
+  `/v1/query`. The batch gets one attempt within 10 seconds and no retry; a
+  failed or unclear batch answer falls back to one `/v1/query` per package;
+  a result counts as "no advisory" only when each key it reads (`results`,
+  `vulns`, `next_page_token`) is spelled exactly and none repeats. Both
+  endpoints' answers share one cache, and each entry expires counted from
+  when its request was sent. Answers that name an advisory win: query
+  records are never replaced by an empty answer, whatever order the
+  requests were sent or answered in, and a batch result naming an advisory
+  stores a mark that sends the package to `/v1/query` and that only a query
+  answer clears (an empty one only if it was sent after that batch). A batch "no advisory" is stored as an empty record list
+  only over another empty answer. Request order is not used to settle these
+  cases, because the order requests were numbered in does not prove the
+  order they reached OSV.dev. The cost: OSV.dev leaves a withdrawn advisory
+  out of query answers (MAL-2024-2929 is no longer returned for react), so
+  within one process a withdrawn advisory, or one that stops listing the
+  package, keeps being reported until its cached entry expires, ten minutes
+  by default. Each `uzomuzo` run starts with an empty cache.
+  Changing the cache TTL empties the cache and drops answers to requests
+  sent before the change. Correction to the bullet
+  above: the OSV lookups do not run alongside the others. They run in
+  sequence with the other enrichment steps, after the first deps.dev package
+  lookup and the GitHub and registry lookups, and before the release-history,
+  license and dependency-count lookups, so their time adds to the scan.
+  Measured on 2026-10-12 for npm/cli (b317f16c80df): the 839 packages took
+  one batch of 1.7 seconds, and 98 of them had an advisory and needed their
+  own query; one `/v1/query` per package took 30.6 seconds with 16 workers.
 - **Not covered: takeovers recorded without a machine-readable marker.**
   ctx@0.2.6 (PyPI, 2022) is described as a takeover in PYSEC-2022-199's text,
   and its GitHub advisory has an empty `cwe_ids`. Neither is admitted, and

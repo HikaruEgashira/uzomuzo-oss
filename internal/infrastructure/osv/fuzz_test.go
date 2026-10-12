@@ -130,6 +130,72 @@ func FuzzDecodeAndClassify(f *testing.F) {
 	})
 }
 
+// FuzzDecodeBatchResults exercises the querybatch decoder on attacker-shaped
+// input: it must never panic, must return one outcome per result, and must mark
+// a result clean only when that result is an object with no advisory, no
+// explicit null vulns, and no further page.
+func FuzzDecodeBatchResults(f *testing.F) {
+	for _, s := range []string{
+		`{"results":[{},{"vulns":[]},{"vulns":[{"id":"MAL-1"}]}]}`,
+		`{"results":[{"vulns":null},{"next_page_token":"x"},null,1,"s",[]]}`,
+		`{"results":[{"VULNS":null},{"Vulns":[{"id":"MAL-1"}]},{"vulns":null,"vulns":[]},{"NEXT_PAGE_TOKEN":"x"}]}`,
+		`{"results":[{"vulnſ":[{"id":"MAL-1"}]}],"results":[{}]}`,
+		`{"results":null}`,
+		`{"results":{}}`,
+		`{}`,
+		``,
+		`null`,
+		`[]`,
+		`{"results":[{"vulns":[{"id":"MAL-1"}]`,
+		`{"results":[` + strings.Repeat(`[`, 512) + strings.Repeat(`]`, 512) + `]}`,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		out, err := decodeBatchResults(raw)
+		if err != nil {
+			return
+		}
+		var top struct {
+			Results []json.RawMessage `json:"results"`
+		}
+		if json.Unmarshal(raw, &top) != nil {
+			t.Fatalf("decoder accepted a body the reference decode rejects: %q", raw)
+		}
+		// A lenient struct decode must see the same results; if it saw others
+		// (a repeated or variant-spelled key), the decoder read the wrong ones.
+		if len(out) != len(top.Results) {
+			t.Fatalf("outcomes = %d, reference results = %d: %q", len(out), len(top.Results), raw)
+		}
+		for i, o := range out {
+			if !o.clean {
+				continue
+			}
+			// Reference check: whatever spelling a lenient struct decode would
+			// accept for vulns or next_page_token must say "nothing here".
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(top.Results[i], &fields) != nil {
+				t.Fatalf("result %d marked clean but is not an object: %s", i, top.Results[i])
+			}
+			for k, v := range fields {
+				val := strings.TrimSpace(string(v))
+				switch {
+				case strings.EqualFold(k, "vulns"):
+					var vulns []json.RawMessage
+					if val == "null" || json.Unmarshal(v, &vulns) != nil || len(vulns) != 0 {
+						t.Fatalf("result %d marked clean with %s=%s", i, k, val)
+					}
+				case strings.EqualFold(k, "next_page_token"):
+					var token string
+					if val != "null" && (json.Unmarshal(v, &token) != nil || strings.TrimSpace(token) != "") {
+						t.Fatalf("result %d marked clean with %s=%s", i, k, val)
+					}
+				}
+			}
+		}
+	})
+}
+
 // checkAdmissible restates every admission rule ClassifyUnmaintained applies,
 // so a positive verdict can be checked against the input that produced it.
 func checkAdmissible(rec *domain.AdvisoryRecord, name string, now time.Time) error {

@@ -88,12 +88,20 @@ Returns Project info for each projectKey (e.g., github.com/owner/repo):
 - Code: `DepsDevClient.fetchLatestRelease`, `DepsDevClient.fetchReleaseInfoBatch` (`internal/infrastructure/depsdev/release.go`)
 - Docs: <https://docs.deps.dev/api/v3alpha/>
 
+#### OSV.dev — Query batch (POST https://api.osv.dev/v1/querybatch)
+
+- Request body: `{"queries":[{"package":{"name":"<name>","ecosystem":"<OSV ecosystem>"}}, ...]}`, at most 1,000 queries per request
+- Fields consumed: per result, in request order — whether `vulns[]` is empty and whether `next_page_token` is absent
+- Purpose: find, in one request, the packages OSV.dev has no advisory for, so the query below is issued only for packages that have one. Batch and query answers share one cache, and entries expire counted from when their request was sent. Answers naming an advisory win regardless of order: query records are never replaced by an empty answer, and a result naming an advisory stores a mark that sends the package to the query below and that only a query answer clears. A "no advisory" is stored as an empty record list only over another empty answer, and an empty query clears a mark only if it was sent after the batch that set it. The cost: if an advisory is withdrawn (OSV.dev then leaves it out of query answers) or stops listing the package after its records were cached, it is still reported until that entry expires (10 minutes by default; each run starts with an empty cache). A result counts as "no advisory" only when each key it reads (`results`, `vulns`, `next_page_token`) is spelled exactly and none repeats; other keys are ignored. Optimisation only: one attempt with a 10-second budget and no retry; a failed or unclear batch leaves every package to its own query
+- Code: `osv.Client.PrimeNoAdvisories` (`internal/infrastructure/osv/batch.go`), `IntegrationService.primeOSVNoAdvisories` (`internal/infrastructure/integration/prime_osv.go`)
+- Docs: <https://google.github.io/osv.dev/post-v1-querybatch/>
+
 #### OSV.dev — Query (POST https://api.osv.dev/v1/query)
 
-- Request body: `{"package":{"name":"<crate>","ecosystem":"crates.io"}}`; paginated via the response's `next_page_token`
-- Fields consumed: per advisory — `id`, `aliases[]`, `summary`, `published`, `withdrawn`, `references[]` (the entry whose `type` is `ADVISORY`); per affected entry — `package.name`, `package.ecosystem`, `ranges[].type`, `ranges[].events[]`, `versions[]`, `database_specific.informational`
-- Purpose: detect the RustSec `unmaintained` marker for cargo packages and record it as a package-level fact (`Analysis.AdvisoryDBState`); queried only for cargo — no other ecosystem is asked. Classification (package-wide range check, withdrawal check, publication-age cooldown) happens in the domain layer (`analysis.ClassifyUnmaintained`), not in the client
-- Code: `osv.Client.QueryPackage` (`internal/infrastructure/osv/client.go`), `IntegrationService.enrichAdvisoryDBState` (`internal/infrastructure/integration/populate_advisorydb_state.go`), `analysis.ClassifyUnmaintained` (`internal/domain/analysis/advisorydb.go`). See [ADR-0025](adr/0025-rustsec-unmaintained-is-a-weak-cargo-signal.md)
+- Request body: `{"package":{"name":"<name>","ecosystem":"<OSV ecosystem>"}}`; paginated via the response's `next_page_token`
+- Fields consumed: per advisory — `id`, `aliases[]`, `summary`, `published`, `withdrawn`, `references[]` (the entry whose `type` is `ADVISORY`); per affected entry — `package.name`, `package.ecosystem`, `ranges[].type`, `ranges[].events[]`, `versions[]`, `database_specific.informational`; per advisory — `database_specific.cwe_ids`
+- Purpose: detect the RustSec `unmaintained` marker for cargo packages and record it as a package-level fact (`Analysis.AdvisoryDBState`, ADR-0025), and detect malicious-package advisories for every supported ecosystem (`Analysis.MaliciousState`, ADR-0027). Sent only for packages the query batch above did not answer as having no advisory. Classification happens in the domain layer, not in the client: `analysis.ClassifyUnmaintained` (package-wide range check, withdrawal check, publication-age cooldown) and `analysis.ClassifyMalicious` (record ID and CWE check, withdrawal check, version and SemVer range match)
+- Code: `osv.Client.QueryPackage` (`internal/infrastructure/osv/client.go`), `IntegrationService.enrichAdvisoryDBState` (`internal/infrastructure/integration/populate_advisorydb_state.go`), `IntegrationService.enrichMaliciousState` (`internal/infrastructure/integration/populate_malicious_state.go`), `analysis.ClassifyUnmaintained` (`internal/domain/analysis/advisorydb.go`). See [ADR-0025](adr/0025-rustsec-unmaintained-is-a-weak-cargo-signal.md) and [ADR-0027](adr/0027-osv-malicious-advisories.md)
 - Docs: <https://google.github.io/osv.dev/post-v1-query/>
 
 #### npm registry — Packument (GET https://registry.npmjs.org/<name>)

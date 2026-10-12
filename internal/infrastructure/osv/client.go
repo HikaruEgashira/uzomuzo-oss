@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -51,17 +52,50 @@ const advisoryReferenceType = "ADVISORY"
 type Client struct {
 	http    *httpclient.Client
 	baseURL string
-	cache   ttlcache.Cache[[]domain.AdvisoryRecord]
+	cache   ttlcache.Cache[cachedAnswer]
+	// batchHTTP sends /v1/querybatch without retries: the batch is an
+	// optimisation, and a retried timeout would only delay the fallback.
+	batchHTTP *httpclient.Client
+	// storeMu serialises the ticket counter and every write to cache, so that
+	// "compare tickets, then store" is one step.
+	storeMu sync.Mutex
+	// lastTicket numbers requests in the order they are sent. Guarded by storeMu.
+	lastTicket uint64
+	// ttlTicket is lastTicket at the last SetCacheTTL. An answer to a request
+	// numbered at or below it is not stored. Guarded by storeMu.
+	ttlTicket uint64
 }
+
+// cachedAnswer is one stored OSV answer for a package, numbered by the request
+// that produced it. needsQuery marks a querybatch result that named an
+// advisory: the records must come from /v1/query, and until they do no
+// "no advisory" answer may be stored for the package. See replaces.
+type cachedAnswer struct {
+	recs       []domain.AdvisoryRecord
+	ticket     uint64
+	needsQuery bool
+	fromBatch  bool
+}
+
+// noRetry is the retry policy for the querybatch prime.
+var noRetry = httpclient.RetryConfig{}
 
 // NewClient returns an OSV.dev client with sensible HTTP defaults.
 func NewClient() *Client {
-	hc := &http.Client{Timeout: 5 * time.Second}
+	return newClient(5 * time.Second)
+}
+
+// newClient takes the per-request timeout of /v1/query so tests can shorten it.
+func newClient(queryTimeout time.Duration) *Client {
 	c := &Client{
-		http:    httpclient.NewClient(hc, httpclient.RegistryRetryConfig()),
-		baseURL: "https://api.osv.dev",
+		http: httpclient.NewClient(&http.Client{Timeout: queryTimeout}, httpclient.RegistryRetryConfig()),
+		// No http.Client timeout here: batchTimeout bounds the batch through its
+		// context. Sharing the /v1/query client would cut a batch off at that
+		// client's shorter timeout, below OSV.dev's stated querybatch latency.
+		batchHTTP: httpclient.NewClient(&http.Client{}, noRetry),
+		baseURL:   "https://api.osv.dev",
 	}
-	c.cache.SetTTL(10 * time.Minute)
+	c.SetCacheTTL(10 * time.Minute)
 	return c
 }
 
@@ -71,13 +105,81 @@ func (c *Client) SetHTTPClient(h *http.Client) {
 		return
 	}
 	c.http = httpclient.NewClient(h, httpclient.RegistryRetryConfig())
+	c.batchHTTP = httpclient.NewClient(h, noRetry)
 }
 
 // SetBaseURL overrides the base host (tests).
 func (c *Client) SetBaseURL(u string) { c.baseURL = strings.TrimRight(u, "/") }
 
 // SetCacheTTL sets the in-memory cache TTL (<=0 disables caching).
-func (c *Client) SetCacheTTL(d time.Duration) { c.cache.SetTTL(d) }
+func (c *Client) SetCacheTTL(d time.Duration) {
+	c.storeMu.Lock()
+	defer c.storeMu.Unlock()
+	// Advisories found while caching was off were never stored, so an older
+	// clean answer must not come back when caching is turned on again.
+	c.cache.Clear()
+	c.cache.SetTTL(d)
+	c.ttlTicket = c.lastTicket
+}
+
+// nextTicket numbers a request about to be sent, and the time it is sent.
+func (c *Client) nextTicket() (uint64, time.Time) {
+	c.storeMu.Lock()
+	defer c.storeMu.Unlock()
+	c.lastTicket++
+	return c.lastTicket, time.Now()
+}
+
+// storeAnswer caches ans for key unless replaces refuses it, or its request
+// predates the last SetCacheTTL. The entry's lifetime is counted from asked,
+// the time the request was sent.
+func (c *Client) storeAnswer(key string, ans cachedAnswer, asked time.Time, fromBatch bool) bool {
+	c.storeMu.Lock()
+	defer c.storeMu.Unlock()
+	if ans.ticket <= c.ttlTicket {
+		return false
+	}
+	ans.fromBatch = fromBatch
+	if old, has := c.cache.Get(key); has && !replaces(ans, old) {
+		return false
+	}
+	c.cache.SetAt(key, ans, asked)
+	return true
+}
+
+// replaces decides whether ans may overwrite the cached old for one package.
+//
+// The rule is "an answer naming an advisory is never replaced by one that
+// does not", because request order cannot tell which of two overlapping
+// answers is current: a ticket is taken before the request is built, so it
+// does not prove which request reached OSV.dev first. The cost: when an
+// advisory is withdrawn (OSV.dev then leaves it out of query answers) or its
+// affected list drops the package, the cached records keep reporting it until
+// the entry expires. That errs toward reporting an advisory, never toward
+// hiding one, and a new process starts with an empty cache.
+func replaces(ans, old cachedAnswer) bool {
+	oldHasRecords := !old.needsQuery && len(old.recs) > 0
+	switch {
+	case oldHasRecords:
+		// Only newer query records refresh query records.
+		return !ans.needsQuery && len(ans.recs) > 0 && ans.ticket > old.ticket
+	case ans.needsQuery:
+		// A batch named an advisory: the package must get its own query.
+		return true
+	case ans.fromBatch:
+		// A batch "no advisory" only refreshes another empty answer, and never
+		// clears a needs-query mark.
+		return !old.needsQuery
+	case old.needsQuery && len(ans.recs) == 0:
+		// An empty query clears a mark only if it was asked after the batch
+		// that set it; an older one may predate the advisory. Kept, the mark
+		// sends the next lookup to a fresh query.
+		return ans.ticket > old.ticket
+	default:
+		// Query records settle a mark; a query answer refreshes an empty one.
+		return true
+	}
+}
 
 // QueryPackage returns every advisory OSV.dev holds for one package, reduced to
 // the fields the domain classifies.
@@ -96,11 +198,12 @@ func (c *Client) QueryPackage(ctx context.Context, ecosystem, name string) ([]do
 	// case-sensitively, so a folded key would serve one package's advisories
 	// for another's name.
 	key := eco + "/" + n
-	if recs, ok := c.cache.Get(key); ok {
+	if ans, ok := c.cache.Get(key); ok && !ans.needsQuery {
 		slog.Debug("osv_cache_hit", "ecosystem", eco, "name", n)
-		return recs, nil
+		return ans.recs, nil
 	}
 
+	ticket, started := c.nextTicket()
 	var out []domain.AdvisoryRecord
 	seenTokens := map[string]bool{}
 	pageToken := ""
@@ -119,7 +222,7 @@ func (c *Client) QueryPackage(ctx context.Context, ecosystem, name string) ([]do
 		}
 		next := strings.TrimSpace(resp.NextPageToken)
 		if next == "" {
-			c.cache.Set(key, out)
+			c.storeAnswer(key, cachedAnswer{recs: out, ticket: ticket}, started, false)
 			return out, nil
 		}
 		// A repeated token means the server is not advancing. Continuing would
@@ -217,6 +320,10 @@ type queryRequest struct {
 type queryResponse struct {
 	Vulns         []wireVuln `json:"vulns"`
 	NextPageToken string     `json:"next_page_token"`
+}
+
+type batchRequest struct {
+	Queries []queryRequest `json:"queries"`
 }
 
 type wireVuln struct {
