@@ -2,6 +2,7 @@
 package config
 
 import (
+	"math"
 	"time"
 )
 
@@ -52,6 +53,8 @@ var DefaultValues = DefaultConfigValues{
 		ResidualAdvisoryThreshold:  1,
 		HighSeverityCVSSThreshold:  7.0,
 		CommitActivityWindowDays:   365,
+		DormantSilenceDays:         365,
+		DormantFlagDays:            7,
 	},
 	Maven: MavenConfig{
 		// Empty means use client default (repo1.maven.org/maven2). Override via MAVEN_BASE_URL.
@@ -136,10 +139,26 @@ type LifecycleAssessmentConfig struct {
 	ResidualAdvisoryThreshold  int     `yaml:"residual_advisory_threshold" json:"residual_advisory_threshold"`
 	HighSeverityCVSSThreshold  float64 `yaml:"high_severity_cvss_threshold" json:"high_severity_cvss_threshold"`
 	CommitActivityWindowDays   int     `yaml:"commit_activity_window_days" json:"commit_activity_window_days"`
+	// DormantSilenceDays is how long a package must go without any release for
+	// its next release to count as a return from silence. See ADR-0026 and
+	// ADR-0028.
+	DormantSilenceDays int `yaml:"dormant_silence_days" json:"dormant_silence_days"`
+	// DormantFlagDays is how long a return from silence stays flagged after
+	// publication, on one line or across lines. It also bounds how long
+	// ADR-0026 keeps a burst across lines in Review Needed. See ADR-0028.
+	DormantFlagDays int `yaml:"dormant_flag_days" json:"dormant_flag_days"`
 }
 
-// NormalizeLifecycleConfig fills zero fields of c with defaults from DefaultValues.Lifecycle.
-// It is safe to call multiple times; fields already set to non-zero values are left unchanged.
+// DormantWindows returns DormantSilenceDays and DormantFlagDays as durations.
+// A day count too large for time.Duration (over about 292 years) becomes the
+// largest duration instead of wrapping to a negative one.
+func (c LifecycleAssessmentConfig) DormantWindows() (silence, flag time.Duration) {
+	return daysToDuration(c.DormantSilenceDays), daysToDuration(c.DormantFlagDays)
+}
+
+// NormalizeLifecycleConfig fills zero fields of c with defaults from DefaultValues.Lifecycle,
+// and also replaces non-positive DormantSilenceDays and DormantFlagDays. It is safe to call
+// multiple times; other fields already set to non-zero values are left unchanged.
 func NormalizeLifecycleConfig(c *LifecycleAssessmentConfig) {
 	def := DefaultValues.Lifecycle
 	if c.Type == "" {
@@ -181,4 +200,22 @@ func NormalizeLifecycleConfig(c *LifecycleAssessmentConfig) {
 	if c.CommitActivityWindowDays == 0 {
 		c.CommitActivityWindowDays = def.CommitActivityWindowDays
 	}
+	// The dormant windows must be positive: a non-positive flag period would
+	// disable the burst rule's age limit while marking nothing.
+	if c.DormantSilenceDays <= 0 {
+		c.DormantSilenceDays = def.DormantSilenceDays
+	}
+	if c.DormantFlagDays <= 0 {
+		c.DormantFlagDays = def.DormantFlagDays
+	}
+}
+
+// daysToDuration converts days to a duration, saturating at the largest
+// time.Duration so that a huge positive count never overflows to a negative one.
+func daysToDuration(days int) time.Duration {
+	const day = 24 * time.Hour
+	if int64(days) > int64(math.MaxInt64/day) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(days) * day
 }

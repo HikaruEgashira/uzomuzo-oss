@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/future-architect/uzomuzo-oss/internal/common"
 	domain "github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
@@ -343,11 +344,24 @@ func (s *AnalysisService) enrichAndAssess(ctx context.Context, analyses map[stri
 		domain.NewLifecycleAssessorService(),
 		domain.NewBuildHealthAssessorService(),
 	)
+	// One clock for the lifecycle rules and the dormant-release marker, and the
+	// same default thresholds the assessor reads, so the two agree on whether a
+	// release is still fresh.
+	now := time.Now()
+	lifecycleConfig := config.GetDefaultLifecycle()
+	config.NormalizeLifecycleConfig(&lifecycleConfig)
+	silence, flag := lifecycleConfig.DormantWindows()
 	for key, analysis := range analyses {
-		if analysis == nil || analysis.Error != nil {
+		if analysis == nil {
 			continue
 		}
-		in := domain.AssessmentInput{Analysis: analysis, Scores: analysis.Scores, EOL: analysis.EOL}
+		// Evaluated before the error check: the release history comes from the
+		// registry, not deps.dev, so it can be present when deps.dev failed.
+		analysis.DormantRelease = analysis.EvaluateDormantRelease(now, silence, flag)
+		if analysis.Error != nil {
+			continue
+		}
+		in := domain.AssessmentInput{Analysis: analysis, Scores: analysis.Scores, EOL: analysis.EOL, Now: now}
 		axisMap, err := composite.AssessAll(ctx, in)
 		if err != nil {
 			slog.Debug("composite_assessment_failed", refLogKey, key, "error", err)

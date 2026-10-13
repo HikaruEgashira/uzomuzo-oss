@@ -37,8 +37,11 @@ type ReleaseHistory struct {
 	Installable map[string]struct{}
 }
 
-// DormantBurst describes a release that came out after a long silence together
-// with releases on other release lines. See ADR-0026.
+// DormantBurst describes a release that came out after a long silence, together
+// with any releases published within DormantBurstWindow of the first one.
+// DetectFreshDormantRelease does not check Lines, so a burst it returns can
+// touch any number of lines, or none when no version has a numeric major. See
+// ADR-0026 and ADR-0028.
 type DormantBurst struct {
 	// Version is the version being assessed.
 	Version string
@@ -73,14 +76,44 @@ type DormantBurst struct {
 // release; otherwise it joins that burst. Releases after version count, so a
 // burst becomes visible once its second line is published, not at the first.
 func DetectDormantBurst(h *ReleaseHistory, version string, now time.Time, minSilence, maxAge time.Duration) *DormantBurst {
+	b := detectDormantReturn(h, version, now, minSilence)
+	if b == nil || len(b.Lines) < DormantBurstMinLines {
+		return nil
+	}
+	if maxAge > 0 && now.Sub(b.PublishedAt) > maxAge {
+		return nil
+	}
+	return b
+}
+
+// DetectFreshDormantRelease reports whether version is a stable release from
+// the first burst after at least minSilence without any release, published no
+// more than freshFor before now. Unlike DetectDormantBurst it needs no second
+// release line, and freshFor <= 0 matches nothing instead of disabling the age
+// limit. Returns nil when the history is missing, version is empty or a
+// prerelease, the version has no publish time or was published after now, the
+// version is in the package's first release burst, or the condition is not met.
+// See ADR-0028.
+func DetectFreshDormantRelease(h *ReleaseHistory, version string, now time.Time, minSilence, freshFor time.Duration) *DormantBurst {
+	if freshFor <= 0 || IsPrerelease(version) {
+		return nil
+	}
+	b := detectDormantReturn(h, version, now, minSilence)
+	if b == nil || now.Sub(b.PublishedAt) > freshFor {
+		return nil
+	}
+	return b
+}
+
+// detectDormantReturn returns the burst holding version when that burst
+// followed at least minSilence without any release, whatever the number of
+// lines it touched. Lines is filled for the caller to check.
+func detectDormantReturn(h *ReleaseHistory, version string, now time.Time, minSilence time.Duration) *DormantBurst {
 	if h == nil || version == "" {
 		return nil
 	}
 	at, ok := h.PublishedAt[version]
 	if !ok || at.IsZero() || at.After(now) {
-		return nil
-	}
-	if maxAge > 0 && now.Sub(at) > maxAge {
 		return nil
 	}
 
@@ -142,15 +175,12 @@ func DetectDormantBurst(h *ReleaseHistory, version string, now time.Time, minSil
 	lineSet := map[string]struct{}{}
 	for _, r := range all[first : last+1] {
 		versions = append(versions, r.v)
-		if isPrerelease(r.v) {
+		if IsPrerelease(r.v) {
 			continue
 		}
 		if l, ok := releaseLine(r.v); ok {
 			lineSet[l] = struct{}{}
 		}
-	}
-	if len(lineSet) < DormantBurstMinLines {
-		return nil
 	}
 	lines := make([]string, 0, len(lineSet))
 	for l := range lineSet {
@@ -211,11 +241,11 @@ func releaseLine(v string) (string, bool) {
 	return "0." + strconv.Itoa(minor), true
 }
 
-// isPrerelease reports whether v carries a semver prerelease suffix
+// IsPrerelease reports whether v carries a semver prerelease suffix
 // ("2.0.0-alpha.0"). Build metadata ("+build") alone is not a prerelease.
 // Not purl.IsStableVersion: it matches keywords, so "1.0.0-next.3" passes as
 // stable there, while semver ranges never select any "-" version.
-func isPrerelease(v string) bool {
+func IsPrerelease(v string) bool {
 	core, _, _ := strings.Cut(v, "+")
 	return strings.Contains(core, "-")
 }

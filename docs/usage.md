@@ -402,12 +402,23 @@ Exit with code 1 when any dependency matches the specified lifecycle labels:
 ./uzomuzo scan --sbom bom.json --fail-on eol-confirmed,eol-effective,stalled
 ```
 
-Valid labels: `eol-confirmed`, `eol-effective`, `eol-scheduled`, `stalled`, `legacy-safe`, `review-needed`
+Valid labels: `eol-confirmed`, `eol-effective`, `eol-scheduled`, `stalled`, `legacy-safe`, `review-needed`, `malicious`, `dormant-release`
+
+`malicious` fails on a version named in an OSV malicious-package advisory. Any
+other non-empty `--fail-on` selection also fails on such a version (see
+[ADR-0027](adr/0027-osv-malicious-advisories.md)).
+
+`dormant-release` fails on an npm version that came out in the last 7 days after
+a year with no releases, whatever its lifecycle label: any stable version, or
+any version in a burst across release lines. No other value implies it: it is a reason to look before adopting, not
+a finding, and ordinary releases carry it too (see
+[ADR-0028](adr/0028-dormant-release-marker.md)). `review-needed` stops only on
+the narrower case below, and only while the label is Review Needed.
 
 `review-needed` covers the cases uzomuzo cannot decide on its own — including a
 package whose every published release is yanked (see
 [ADR-0022](adr/0022-all-releases-yanked-is-not-eol.md)), and an npm version
-published after a year with no releases, together with versions on other release
+published in the last 7 days after a year with no releases, together with versions on other release
 lines (other major versions, or other minor versions below 1.0) within a day: the way past takeovers of npm packages that had gone quiet
 (node-ipc, rc) have looked (see [ADR-0026](adr/0026-dormant-release-burst.md)). Add it to `--fail-on`
 when CI should stop for a human to look, rather than only for a confirmed

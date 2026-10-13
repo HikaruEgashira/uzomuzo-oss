@@ -1,7 +1,7 @@
 # 0026. A release burst across lines after a long silence needs a human
 
 Date: 2026-10-08
-Status: Accepted
+Status: Accepted — flag period shortened to 7 days, see [ADR-0028](0028-dormant-release-marker.md)
 
 ## Context
 
@@ -222,3 +222,11 @@ tooling-heavy; other populations will differ.
   publisher changes (`_npmUser`), new dependencies and new install scripts in the
   burst, which are lost when the registry removes the version and so could not be
   checked against the incidents above.
+- **Update 2026-10-13: ADR-0028 amends the flag period and the thresholds.** A
+  burst now turns Active or Legacy-Safe into Review Needed for `DormantFlagDays`
+  (7 days) after publication, not `RecentStableWindowDays` (365), so
+  `pkg:npm/node-ipc@12.0.1` was Review Needed until 2026-05-21 rather than
+  2027-05-14. The silence threshold moved to its own setting,
+  `DormantSilenceDays` (365). The burst is also carried as a marker next to the
+  label, which ADR-0028 describes. The bullets above record this decision as it
+  was first accepted.
