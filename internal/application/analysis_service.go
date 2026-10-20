@@ -450,6 +450,14 @@ func (s *AnalysisService) checkMaintainerDomains(ctx context.Context, analyses m
 	if s.maintainerDomainChecker == nil {
 		return
 	}
+	// Publisher evidence draws on every npm packument fetched in this batch; a
+	// scan analyses PURL and GitHub URL inputs in separate batches.
+	var histories []domain.PublisherPackageHistory
+	for _, a := range analyses {
+		if a != nil && a.ReleaseHistory != nil && a.ReleaseHistory.Registry == domain.RegistryNpm {
+			histories = append(histories, a.ReleaseHistory.PublisherHistory)
+		}
+	}
 	for _, key := range slices.Sorted(maps.Keys(analyses)) {
 		if ctx.Err() != nil {
 			return
@@ -461,7 +469,11 @@ func (s *AnalysisService) checkMaintainerDomains(ctx context.Context, analyses m
 		s.refreshRDAPBootstrap(ctx)
 		result := &domain.MaintainerDomainResult{}
 		for _, address := range a.ReleaseHistory.Maintainers {
-			result.Findings = append(result.Findings, s.maintainerDomainChecker.Check(ctx, address, now))
+			finding := s.maintainerDomainChecker.Check(ctx, address, now)
+			if finding.Kind.WarrantsNotice() {
+				finding.PublisherEmailEvidence = domain.PublisherEmailEvidenceFor(finding, domain.PublisherScopeScanPackuments, a.ReleaseHistory.PublisherHistory, histories)
+			}
+			result.Findings = append(result.Findings, finding)
 			// A package interrupted by cancellation would report the cut-short
 			// lookups as RDAP failures, so it is left without a result.
 			if ctx.Err() != nil {

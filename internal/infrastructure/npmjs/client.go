@@ -14,6 +14,7 @@ import (
 
 	"github.com/future-architect/uzomuzo-oss/internal/common"
 	"github.com/future-architect/uzomuzo-oss/internal/common/links"
+	"github.com/future-architect/uzomuzo-oss/internal/common/maildomain"
 	"github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/httpclient"
 )
@@ -344,6 +345,12 @@ type PublishHistory struct {
 	// VersionPublisher maps version to its "_npmUser". It is nil unless the
 	// history was built by ParsePublishHistoryWithVersions.
 	VersionPublisher map[string]Person
+	// PublisherHistory summarizes each publisher account's latest dated
+	// publishes and the publish times of versions whose publisher is not
+	// visible.
+	PublisherHistory analysis.PublisherPackageHistory
+	// unattributed holds versions whose manifest names no publisher account.
+	unattributed map[string]struct{}
 }
 
 // Person holds a maintainer or publisher identity from an npm packument.
@@ -417,6 +424,15 @@ func (c *Client) GetPublishHistory(ctx context.Context, fullName string) (*Publi
 	if err != nil {
 		return nil, false, fmt.Errorf("npm packument %q: %w", fullName, err)
 	}
+	// Each slice shares its backing array with the map value, so the names
+	// are filled in place.
+	for _, publishes := range h.PublisherHistory.Latest {
+		for i := range publishes {
+			if publishes[i].Package == "" {
+				publishes[i].Package = fullName
+			}
+		}
+	}
 	return h, true, nil
 }
 
@@ -456,11 +472,12 @@ func extractNpmSuccessor(msg string) string {
 	return ""
 }
 
-// parsePublishHistory decodes the "time", "versions" and "maintainers" keys of
-// a packument. Of each version manifest only "maintainers" and "_npmUser" are
-// kept, as raw JSON: a packument with thousands of versions runs to megabytes,
-// and the rest of the manifest is not needed here. Per-version identities are
-// folded into FirstSeen and not retained.
+// parsePublishHistory decodes the "name", "time", "versions" and "maintainers"
+// keys of a packument. Of each version manifest only "maintainers" and
+// "_npmUser" are kept, as raw JSON: a packument with thousands of versions runs
+// to megabytes, and the rest of the manifest is not needed here. Per-version
+// identities are folded into FirstSeen, and each "_npmUser" into
+// PublisherHistory; the identities themselves are not retained.
 func parsePublishHistory(r io.Reader) (*PublishHistory, error) {
 	return decodePublishHistory(r, false)
 }
@@ -471,6 +488,7 @@ func decodePublishHistory(r io.Reader, retainVersions bool) (*PublishHistory, er
 		NPMUser     json.RawMessage `json:"_npmUser"`
 	}
 	var doc struct {
+		Name        string                      `json:"name"`
 		Time        map[string]json.RawMessage  `json:"time"`
 		Versions    map[string]manifestIdentity `json:"versions"`
 		Maintainers json.RawMessage             `json:"maintainers"`
@@ -522,10 +540,42 @@ func decodePublishHistory(r io.Reader, retainVersions bool) (*PublishHistory, er
 		if at.IsZero() {
 			continue
 		}
+		if account := analysis.StripControlRunes(publisher.Name); account != "" {
+			h.PublisherHistory.AddPublisherPublish(account, publisherPublish(doc.Name, v, at, publisher.Email))
+		} else {
+			if h.unattributed == nil {
+				h.unattributed = make(map[string]struct{})
+			}
+			h.unattributed[v] = struct{}{}
+		}
 		recordFirstSeen(h.FirstSeen, at, people...)
 		recordFirstSeen(h.FirstSeen, at, publisher)
 	}
+	h.PublisherHistory.HiddenPublishedAt = h.hiddenPublishTimes(time.Time{})
 	return h, nil
+}
+
+// hiddenPublishTimes returns the publish times of versions whose publisher is
+// not visible, before cutoff when it is non-zero: versions missing from
+// "versions", and versions whose manifest names no publisher account. It
+// returns nil when "versions" was missing or null, since removal is then
+// unknown.
+func (h *PublishHistory) hiddenPublishTimes(cutoff time.Time) []time.Time {
+	if h.Installable == nil {
+		return nil
+	}
+	var out []time.Time
+	for v, at := range h.PublishedAt {
+		if !cutoff.IsZero() && !at.Before(cutoff) {
+			continue
+		}
+		_, visible := h.Installable[v]
+		_, unattributed := h.unattributed[v]
+		if !visible || unattributed {
+			out = append(out, at)
+		}
+	}
+	return out
 }
 
 // recordFirstSeen keeps the earliest time, in UTC, each person's normalized
@@ -537,6 +587,39 @@ func recordFirstSeen(m map[string]time.Time, at time.Time, people ...Person) {
 			m[email] = at.UTC()
 		}
 	}
+}
+
+// publisherPublish leaves both domains empty for an address that the RDAP
+// check would reject as invalid: no valid host, or no registrable domain.
+func publisherPublish(packageName, version string, at time.Time, email string) analysis.PublisherPublish {
+	p := analysis.PublisherPublish{Package: packageName, Version: version, PublishedAt: at}
+	host := maildomain.Host(email)
+	if host == "" {
+		return p
+	}
+	if registrable, _ := maildomain.Registrable(host); registrable != "" {
+		p.EmailDomain, p.RegistrableDomain = host, registrable
+	}
+	return p
+}
+
+// PublisherHistoryBefore builds a summary using only publishes before cutoff.
+// It needs a history from ParsePublishHistoryWithVersions; any other history
+// has no per-version publishers, so the summary lists no visible publish.
+func (h *PublishHistory) PublisherHistoryBefore(packageName string, cutoff time.Time) analysis.PublisherPackageHistory {
+	var out analysis.PublisherPackageHistory
+	if h == nil {
+		return out
+	}
+	for version, publisher := range h.VersionPublisher {
+		at := h.PublishedAt[version]
+		if at.IsZero() || !at.Before(cutoff) {
+			continue
+		}
+		out.AddPublisherPublish(analysis.StripControlRunes(publisher.Name), publisherPublish(packageName, version, at, publisher.Email))
+	}
+	out.HiddenPublishedAt = h.hiddenPublishTimes(cutoff)
+	return out
 }
 
 func decodePeople(raw json.RawMessage) []Person {
