@@ -156,14 +156,16 @@ func ResolveFormat(explicit string, inputCount int) (string, error) {
 // renderScanOutput dispatches to the correct renderer by format.
 // allEntries is used for summary counts; displayEntries is the (possibly filtered) set to render.
 // filterActive indicates whether --show-only was explicitly provided (even if all entries match).
-func renderScanOutput(w io.Writer, allEntries, displayEntries []domainaudit.AuditEntry, format string, filterActive bool) error {
+// bootstrap is the RDAP service list used by --maintainer-domain, nil when the check did not run;
+// only JSON reports it.
+func renderScanOutput(w io.Writer, allEntries, displayEntries []domainaudit.AuditEntry, format string, filterActive bool, bootstrap *domain.RDAPBootstrapInfo) error {
 	switch format {
 	case FormatDetailed:
 		return renderScanDetailed(w, allEntries, displayEntries, filterActive)
 	case FormatTable:
 		return renderScanTable(w, allEntries, displayEntries, filterActive)
 	case FormatJSON:
-		return renderScanJSON(w, allEntries, displayEntries, filterActive)
+		return renderScanJSON(w, allEntries, displayEntries, filterActive, bootstrap)
 	case FormatCSV:
 		return renderScanCSV(w, displayEntries)
 	default:
@@ -464,15 +466,16 @@ func buildIntegrityDisplay(a *domain.Analysis, verdict domainaudit.Verdict) stri
 
 // enrichedJSONEntry is the DTO for --format json with full analysis data.
 type enrichedJSONEntry struct {
-	PURL                string         `json:"purl"`
-	Verdict             string         `json:"verdict"`
-	Lifecycle           string         `json:"lifecycle"`
-	Malicious           *maliciousJSON `json:"malicious,omitempty"`
-	MaliciousCheck      string         `json:"malicious_check,omitempty"`
-	DormantRelease      *dormantJSON   `json:"dormant_release,omitempty"`
-	BuildIntegrity      string         `json:"build_integrity,omitempty"`
-	BuildIntegrityScore *float64       `json:"build_integrity_score,omitempty"`
-	Successor           string         `json:"successor,omitempty"`
+	PURL                string                `json:"purl"`
+	Verdict             string                `json:"verdict"`
+	Lifecycle           string                `json:"lifecycle"`
+	Malicious           *maliciousJSON        `json:"malicious,omitempty"`
+	MaliciousCheck      string                `json:"malicious_check,omitempty"`
+	DormantRelease      *dormantJSON          `json:"dormant_release,omitempty"`
+	MaintainerDomain    *maintainerDomainJSON `json:"maintainer_domain,omitempty"`
+	BuildIntegrity      string                `json:"build_integrity,omitempty"`
+	BuildIntegrityScore *float64              `json:"build_integrity_score,omitempty"`
+	Successor           string                `json:"successor,omitempty"`
 
 	RepoURL        string  `json:"repo_url,omitempty"`
 	Archived       bool    `json:"archived"`
@@ -521,19 +524,55 @@ type dormantJSON struct {
 	Until         time.Time                 `json:"until"`
 }
 
+type maintainerDomainJSON struct {
+	Flagged           []maintainerDomainFindingJSON   `json:"flagged"`
+	Unchecked         int                             `json:"unchecked"`
+	LookupFailed      int                             `json:"lookup_failed"`
+	UncheckedFindings []maintainerDomainUncheckedJSON `json:"unchecked_findings"`
+}
+
+type maintainerDomainUncheckedJSON struct {
+	Account string                        `json:"account"`
+	Domain  string                        `json:"domain"`
+	Reason  domain.MaintainerDomainReason `json:"reason"`
+}
+
+// maintainerDomainFindingJSON omits registered when RDAP gave no registration
+// date (unregistered, and lapsing without a date).
+type maintainerDomainFindingJSON struct {
+	Account    string                      `json:"account"`
+	Domain     string                      `json:"domain"`
+	Kind       domain.MaintainerDomainKind `json:"kind"`
+	FirstSeen  time.Time                   `json:"first_seen"`
+	Registered time.Time                   `json:"registered,omitzero"`
+	Registrar  string                      `json:"registrar,omitempty"`
+	DropCatch  bool                        `json:"drop_catch"`
+}
+
 type enrichedJSONOutput struct {
-	Summary  jsonSummary         `json:"summary"`
-	Entries  []enrichedJSONEntry `json:"packages"`
-	Filtered bool                `json:"filtered,omitempty"`
-	Shown    int                 `json:"shown"`
+	Summary       jsonSummary         `json:"summary"`
+	Entries       []enrichedJSONEntry `json:"packages"`
+	Filtered      bool                `json:"filtered,omitempty"`
+	Shown         int                 `json:"shown"`
+	RDAPBootstrap *rdapBootstrapJSON  `json:"rdap_bootstrap,omitempty"`
+}
+
+// rdapBootstrapJSON reports the IANA RDAP service list --maintainer-domain used.
+type rdapBootstrapJSON struct {
+	Source      domain.RDAPBootstrapSource `json:"source"`
+	Publication string                     `json:"publication"`
 }
 
 // renderScanJSON renders the JSON output format.
 // filterActive indicates whether --show-only was explicitly provided.
-func renderScanJSON(w io.Writer, allEntries, displayEntries []domainaudit.AuditEntry, filterActive bool) error {
+// bootstrap, when non-nil, is written as rdap_bootstrap.
+func renderScanJSON(w io.Writer, allEntries, displayEntries []domainaudit.AuditEntry, filterActive bool, bootstrap *domain.RDAPBootstrapInfo) error {
 	out := enrichedJSONOutput{
 		Summary: computeSummary(allEntries),
 		Entries: make([]enrichedJSONEntry, 0, len(displayEntries)),
+	}
+	if bootstrap != nil {
+		out.RDAPBootstrap = &rdapBootstrapJSON{Source: bootstrap.Source, Publication: bootstrap.Publication}
 	}
 	if filterActive {
 		out.Filtered = true
@@ -587,6 +626,21 @@ func newEnrichedJSONEntry(e *domainaudit.AuditEntry) enrichedJSONEntry {
 		d := a.DormantRelease
 		je.DormantRelease = &dormantJSON{Kind: d.Kind, PublishedAt: d.Burst.PublishedAt, SilentDays: d.Burst.SilentDays,
 			BurstVersions: d.Burst.Versions, Lines: d.Burst.Lines, Removed: d.Burst.Removed, Until: d.Until}
+	}
+	if a.MaintainerDomain != nil {
+		m := &maintainerDomainJSON{Flagged: []maintainerDomainFindingJSON{}, UncheckedFindings: []maintainerDomainUncheckedJSON{}}
+		for _, f := range a.MaintainerDomain.Findings {
+			switch {
+			case f.Kind == domain.MaintainerDomainUnchecked:
+				m.Unchecked++
+				m.UncheckedFindings = append(m.UncheckedFindings, maintainerDomainUncheckedJSON{Account: f.Account, Domain: f.Domain, Reason: f.Reason})
+			case f.Kind == domain.MaintainerDomainLookupFailed:
+				m.LookupFailed++
+			case f.Kind.WarrantsNotice():
+				m.Flagged = append(m.Flagged, maintainerDomainFindingJSON{Account: f.Account, Domain: f.Domain, Kind: f.Kind, FirstSeen: f.FirstSeen, Registered: f.Registered, Registrar: f.Registrar, DropCatch: f.DropCatch})
+			}
+		}
+		je.MaintainerDomain = m
 	}
 
 	if a.ReleaseInfo != nil {

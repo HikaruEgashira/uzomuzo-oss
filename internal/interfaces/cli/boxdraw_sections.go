@@ -307,6 +307,20 @@ func writeBoxOrigin(ctx *boxContext) error {
 // (ADR-0028) in the detailed view.
 const dormantReleasePrefix = "⚠ Release after silence:"
 
+// maintainerDomainPrefix starts each line that shows a maintainer e-mail domain
+// notice (ADR-0030) in the detailed view.
+const maintainerDomainPrefix = "⚠ Maintainer domain:"
+
+// writeMaintainerDomainNotices writes one line per flagged maintainer address.
+func writeMaintainerDomainNotices(ctx *boxContext) error {
+	for _, notice := range ctx.analysis.MaintainerDomainNotices() {
+		if err := writeLine(ctx, "%s %s", maintainerDomainPrefix, notice); err != nil {
+			return fmt.Errorf("write maintainer domain notice: %w", err)
+		}
+	}
+	return nil
+}
+
 // writeBoxVerdict writes lifecycle verdict inline (no section bar).
 // Format: "icon Label: reason" on a single line (word-wrapped if long).
 // Displayed immediately after identity, before any section bars.
@@ -324,6 +338,9 @@ func writeBoxVerdict(ctx *boxContext) error {
 		if err := writeLine(ctx, "%s %s", dormantReleasePrefix, notice); err != nil {
 			return err
 		}
+	}
+	if err := writeMaintainerDomainNotices(ctx); err != nil {
+		return err
 	}
 	icon := verdictIcon(ctx.entry.Verdict)
 	label := verdictLabel(ctx.entry.Verdict)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/future-architect/uzomuzo-oss/internal/common/links"
@@ -14,7 +15,9 @@ import (
 // enrichReleaseHistory populates Analysis.ReleaseHistory for npm analyses with
 // the registry's publish time for every version, removed ones included. The
 // lifecycle assessor reads it against the analysed version to detect a release
-// burst after a long silence (ADR-0026). No-op when the npm client is unwired.
+// burst after a long silence (ADR-0026). It also carries the current maintainers
+// and the first appearance of each address for --maintainer-domain (ADR-0030).
+// No-op when the npm client is unwired.
 //
 // Best-effort: a fetch failure leaves ReleaseHistory nil, which the assessor
 // reads as "not asked". One request per distinct package name, for versioned PURLs only.
@@ -61,6 +64,7 @@ func (s *IntegrationService) enrichReleaseHistory(ctx context.Context, analyses 
 		cp := *h
 		cp.PublishedAt = maps.Clone(h.PublishedAt)
 		cp.Installable = maps.Clone(h.Installable)
+		cp.Maintainers = slices.Clone(h.Maintainers)
 		a.ReleaseHistory = &cp
 	})
 }
@@ -74,9 +78,16 @@ func (s *IntegrationService) fetchNpmReleaseHistory(ctx context.Context, fullNam
 	if !found || h == nil {
 		return nil, false, nil
 	}
+	maintainers := make([]domain.MaintainerAddress, 0, len(h.Maintainers))
+	for _, p := range h.Maintainers {
+		// The account name is shown in the terminal notice; see
+		// StripControlRunes for what it removes.
+		maintainers = append(maintainers, domain.MaintainerAddress{Account: domain.StripControlRunes(p.Name), Email: p.Email, FirstSeen: h.FirstSeen[domain.NormalizeEmail(p.Email)]})
+	}
 	return &domain.ReleaseHistory{
 		Registry:    domain.RegistryNpm,
 		PublishedAt: h.PublishedAt,
 		Installable: h.Installable,
+		Maintainers: maintainers,
 	}, true, nil
 }

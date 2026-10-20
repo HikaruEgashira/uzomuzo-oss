@@ -5,12 +5,73 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestParsePublishHistoryMaintainers checks first appearance and current maintainers.
+func TestParsePublishHistoryMaintainers(t *testing.T) {
+	t.Parallel()
+	f, err := os.Open(filepath.Join("testdata", "node-ipc-maintainers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	h, err := parsePublishHistory(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2020, 11, 11, 0, 0, 0, 0, time.UTC)
+	if got := h.FirstSeen["a.tiertant@atlantis-software.net"]; !got.Equal(want) {
+		t.Errorf("first seen=%s, want %s", got, want)
+	}
+	if len(h.Maintainers) != 2 || h.Maintainers[0].Name != "atiertant" {
+		t.Errorf("maintainers=%+v", h.Maintainers)
+	}
+	if h.VersionMaintainers != nil || h.VersionPublisher != nil {
+		t.Errorf("scan history retained per-version identities")
+	}
+	if _, ok := h.FirstSeen["new@example.com"]; ok {
+		t.Error("version without time counted")
+	}
+}
+
+// TestParsePublishHistoryForMeasurementKeepsVersionIdentities checks measurement-only identity maps.
+func TestParsePublishHistoryForMeasurementKeepsVersionIdentities(t *testing.T) {
+	t.Parallel()
+	f, err := os.Open(filepath.Join("testdata", "node-ipc-maintainers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	h, err := ParsePublishHistoryWithVersions(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.VersionMaintainers) == 0 || len(h.VersionPublisher) == 0 {
+		t.Errorf("measurement history missing per-version identities")
+	}
+	if got := h.FirstSeenBefore(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))["a.tiertant@atlantis-software.net"]; !got.Equal(time.Date(2020, 11, 11, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("measurement first appearance=%s", got)
+	}
+}
+
+// TestParsePublishHistoryLegacyMaintainerShapes checks malformed legacy fields.
+func TestParsePublishHistoryLegacyMaintainerShapes(t *testing.T) {
+	t.Parallel()
+	const raw = `{"time":{"1.0.0":"2020-01-01T00:00:00Z"},"maintainers":"legacy","versions":{"1.0.0":{"maintainers":"legacy","_npmUser":"legacy"}}}`
+	h, err := parsePublishHistory(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Maintainers) != 0 || len(h.FirstSeen) != 0 || len(h.PublishedAt) != 1 {
+		t.Errorf("history=%+v", h)
+	}
+}
 
 // TestGetPublishHistory covers a removed version, malformed time entries, a
 // scoped name and a missing package.
@@ -55,6 +116,9 @@ func TestGetPublishHistory(t *testing.T) {
 	}
 	if len(h.PublishedAt) != 2 {
 		t.Fatalf("PublishedAt = %v, want only the two version entries", h.PublishedAt)
+	}
+	if h.VersionMaintainers != nil || h.VersionPublisher != nil {
+		t.Error("scan response retained per-version identity maps")
 	}
 	want := time.Date(2026, 5, 14, 14, 25, 30, 311000000, time.UTC)
 	if !h.PublishedAt["12.0.1"].Equal(want) {
@@ -195,5 +259,19 @@ func TestGetPublishHistory_LiveProbe(t *testing.T) {
 	}
 	if _, ok := h.PublishedAt["1.95.6"]; !ok {
 		t.Error("@solana/web3.js 1.95.6 has no time entry")
+	}
+}
+
+// TestRecordFirstSeenStoresUTC checks that first appearances are kept in UTC
+// and that the earliest instant wins regardless of offset.
+func TestRecordFirstSeenStoresUTC(t *testing.T) {
+	t.Parallel()
+	m := map[string]time.Time{}
+	tokyo := time.FixedZone("JST", 9*60*60)
+	recordFirstSeen(m, time.Date(2020, 11, 11, 9, 0, 0, 0, tokyo), Person{Email: " A@Example.com "})
+	recordFirstSeen(m, time.Date(2020, 11, 11, 1, 0, 0, 0, time.UTC), Person{Email: "a@example.com"})
+	got := m["a@example.com"]
+	if !got.Equal(time.Date(2020, 11, 11, 0, 0, 0, 0, time.UTC)) || got.Location() != time.UTC {
+		t.Errorf("first seen=%s (%s), want 2020-11-11T00:00:00Z in UTC", got, got.Location())
 	}
 }

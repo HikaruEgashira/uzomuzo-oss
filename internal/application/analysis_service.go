@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/future-architect/uzomuzo-oss/internal/common"
@@ -23,6 +26,7 @@ import (
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/osv"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/packagist"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/pypi"
+	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/rdap"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/rubygems"
 	// TODO: rename directory successor -> eolevaluator; after physical move adjust import
 )
@@ -62,6 +66,36 @@ type AnalysisEnricher func(ctx context.Context, analyses map[string]*domain.Anal
 // Option configures an AnalysisService.
 type Option func(*AnalysisService)
 
+type maintainerDomainChecker interface {
+	Check(context.Context, domain.MaintainerAddress, time.Time) domain.MaintainerDomainFinding
+}
+
+// rdapBootstrapRefresher is implemented by a checker that can refresh its RDAP
+// service list before the first check.
+type rdapBootstrapRefresher interface {
+	RefreshBootstrap(context.Context) domain.RDAPBootstrapInfo
+}
+
+// WithMaintainerDomain enables the optional npm maintainer domain check. The
+// RDAP service list is refreshed from IANA once per service and cached under
+// the user cache directory. See ADR-0030.
+func WithMaintainerDomain() Option {
+	return func(s *AnalysisService) {
+		client := rdap.NewClient()
+		client.SetBootstrapCache(rdap.DefaultBootstrapCachePath())
+		s.maintainerDomainChecker = client
+	}
+}
+
+// RDAPBootstrap reports the RDAP service list the maintainer domain check
+// used. It is nil when the check is off, when it found no npm package to
+// check, or when its checker cannot refresh the list.
+func (s *AnalysisService) RDAPBootstrap() *domain.RDAPBootstrapInfo {
+	s.rdapBootstrapMu.Lock()
+	defer s.rdapBootstrapMu.Unlock()
+	return s.rdapBootstrap
+}
+
 // WithEnricher appends an enricher to the pipeline between Phase 1 and Phase 3.
 func WithEnricher(e AnalysisEnricher) Option {
 	return func(s *AnalysisService) {
@@ -74,9 +108,12 @@ func WithEnricher(e AnalysisEnricher) Option {
 // DDD Layer: Application (use case orchestration)
 // Responsibilities: Orchestrates domain objects, coordinates business workflows
 type AnalysisService struct {
-	integrationService AnalysisSource
-	cfg                *config.Config
-	enrichers          []AnalysisEnricher
+	integrationService      AnalysisSource
+	cfg                     *config.Config
+	enrichers               []AnalysisEnricher
+	maintainerDomainChecker maintainerDomainChecker
+	rdapBootstrapMu         sync.Mutex
+	rdapBootstrap           *domain.RDAPBootstrapInfo
 	// packagistClient is stored here (unlike other infra clients) because
 	// ProcessBatch* methods pass it to eolevaluator.NewEvaluator to share
 	// the same instance (and its 5-min TTL cache) across calls.
@@ -344,10 +381,12 @@ func (s *AnalysisService) enrichAndAssess(ctx context.Context, analyses map[stri
 		domain.NewLifecycleAssessorService(),
 		domain.NewBuildHealthAssessorService(),
 	)
-	// One clock for the lifecycle rules and the dormant-release marker, and the
-	// same default thresholds the assessor reads, so the two agree on whether a
-	// release is still fresh.
+	// One clock for the lifecycle rules, the dormant-release marker and the
+	// maintainer domain check, and the same default thresholds the assessor
+	// reads, so the lifecycle rules and the dormant-release marker agree on
+	// whether a release is still fresh.
 	now := time.Now()
+	s.checkMaintainerDomains(ctx, analyses, now)
 	lifecycleConfig := config.GetDefaultLifecycle()
 	config.NormalizeLifecycleConfig(&lifecycleConfig)
 	silence, flag := lifecycleConfig.DormantWindows()
@@ -402,4 +441,49 @@ func eolEvidenceSource(e domain.EOLStatus) string {
 		return e.Evidences[0].Source
 	}
 	return "unknown"
+}
+
+// checkMaintainerDomains fills Analysis.MaintainerDomain for npm analyses with
+// a release history when the check is enabled. Packages are visited in key
+// order so a cancelled run stops at a predictable point. See ADR-0030.
+func (s *AnalysisService) checkMaintainerDomains(ctx context.Context, analyses map[string]*domain.Analysis, now time.Time) {
+	if s.maintainerDomainChecker == nil {
+		return
+	}
+	for _, key := range slices.Sorted(maps.Keys(analyses)) {
+		if ctx.Err() != nil {
+			return
+		}
+		a := analyses[key]
+		if a == nil || a.ReleaseHistory == nil || a.ReleaseHistory.Registry != domain.RegistryNpm {
+			continue
+		}
+		s.refreshRDAPBootstrap(ctx)
+		result := &domain.MaintainerDomainResult{}
+		for _, address := range a.ReleaseHistory.Maintainers {
+			result.Findings = append(result.Findings, s.maintainerDomainChecker.Check(ctx, address, now))
+			// A package interrupted by cancellation would report the cut-short
+			// lookups as RDAP failures, so it is left without a result.
+			if ctx.Err() != nil {
+				return
+			}
+		}
+		a.MaintainerDomain = result
+	}
+}
+
+// refreshRDAPBootstrap refreshes the checker's RDAP service list once, before
+// the first package is checked, so a scan without npm packages fetches nothing.
+func (s *AnalysisService) refreshRDAPBootstrap(ctx context.Context) {
+	refresher, ok := s.maintainerDomainChecker.(rdapBootstrapRefresher)
+	if !ok {
+		return
+	}
+	s.rdapBootstrapMu.Lock()
+	defer s.rdapBootstrapMu.Unlock()
+	if s.rdapBootstrap != nil {
+		return
+	}
+	info := refresher.RefreshBootstrap(ctx)
+	s.rdapBootstrap = &info
 }

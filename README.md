@@ -124,6 +124,9 @@ trivy fs . --format cyclonedx | uzomuzo scan --sbom - --show-transitive  # inclu
 uzomuzo scan                     # auto-detect go.mod in cwd
 uzomuzo scan --format json       # JSON output for CI integration
 
+# Optional npm maintainer e-mail domain notice (makes RDAP requests; caches IANA's RDAP server list)
+uzomuzo scan --maintainer-domain pkg:npm/express@4.18.2
+
 # CI gate: exit 1 if any EOL dependency found
 uzomuzo scan --sbom bom.json --fail-on eol-confirmed
 
@@ -140,6 +143,9 @@ uzomuzo scan --file .github/workflows/ci.yml
 # File input (one PURL per line)
 uzomuzo scan --file input_purls.txt --sample 500
 ```
+
+`--maintainer-domain` is off by default and applies only to versioned npm inputs. It adds a notice for manual review without changing the scan verdict, in `--format json` (`maintainer_domain`) and the detailed view; table and CSV output are unchanged. The notice says what may happen (if the maintainer still uses the address, npm password-reset mail may reach whoever holds or next registers the domain) and asks for the account e-mail and 2FA to be confirmed. See [ADR-0030](docs/adr/0030-maintainer-email-domain-marker.md).
+When RDAP provides the registrar of a re-registered domain, the notice names it. The list of RDAP servers is fetched from IANA and cached under the user cache directory, with the copy built into the binary as the fallback.
 
 ### Dependency Diet — *Which dependency should I remove first?*
 
