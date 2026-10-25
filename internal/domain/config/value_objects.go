@@ -55,6 +55,7 @@ var DefaultValues = DefaultConfigValues{
 		CommitActivityWindowDays:   365,
 		DormantSilenceDays:         365,
 		DormantFlagDays:            7,
+		YoungReleaseDays:           7,
 	},
 	Maven: MavenConfig{
 		// Empty means use client default (repo1.maven.org/maven2). Override via MAVEN_BASE_URL.
@@ -147,6 +148,9 @@ type LifecycleAssessmentConfig struct {
 	// publication, on one line or across lines. It also bounds how long
 	// ADR-0026 keeps a burst across lines in Review Needed. See ADR-0028.
 	DormantFlagDays int `yaml:"dormant_flag_days" json:"dormant_flag_days"`
+	// YoungReleaseDays is the publish-age window for the young-release marker.
+	// See ADR-0031.
+	YoungReleaseDays int `yaml:"young_release_days" json:"young_release_days"`
 }
 
 // DormantWindows returns DormantSilenceDays and DormantFlagDays as durations.
@@ -156,8 +160,13 @@ func (c LifecycleAssessmentConfig) DormantWindows() (silence, flag time.Duration
 	return daysToDuration(c.DormantSilenceDays), daysToDuration(c.DormantFlagDays)
 }
 
+// YoungReleaseWindow returns the configured publish-age window.
+func (c LifecycleAssessmentConfig) YoungReleaseWindow() time.Duration {
+	return daysToDuration(c.YoungReleaseDays)
+}
+
 // NormalizeLifecycleConfig fills zero fields of c with defaults from DefaultValues.Lifecycle,
-// and also replaces non-positive DormantSilenceDays and DormantFlagDays. It is safe to call
+// and also replaces non-positive DormantSilenceDays, DormantFlagDays and YoungReleaseDays. It is safe to call
 // multiple times; other fields already set to non-zero values are left unchanged.
 func NormalizeLifecycleConfig(c *LifecycleAssessmentConfig) {
 	def := DefaultValues.Lifecycle
@@ -207,6 +216,10 @@ func NormalizeLifecycleConfig(c *LifecycleAssessmentConfig) {
 	}
 	if c.DormantFlagDays <= 0 {
 		c.DormantFlagDays = def.DormantFlagDays
+	}
+	// A non-positive young-release window would disable the marker.
+	if c.YoungReleaseDays <= 0 {
+		c.YoungReleaseDays = def.YoungReleaseDays
 	}
 }
 

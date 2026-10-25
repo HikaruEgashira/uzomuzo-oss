@@ -84,7 +84,7 @@ Returns Project info for each projectKey (e.g., github.com/owner/repo):
 #### deps.dev — Releases (GET /v3alpha/systems/{ecosystem}/packages/{name})
 
 - Returns: Versions list (`versionKey.version`, `publishedAt`, `isDefault`, `isDeprecated`, `deprecatedReason`) — no yank data except cargo, which reports yanks as `isDeprecated` with `deprecatedReason` `"yanked"`; see [ADR-0024](adr/0024-cargo-yank-from-depsdev.md) and [ADR-0023](adr/0023-stable-version-source.md)
-- Purpose: Identify latest stable/dev/requested version and freshness
+- Purpose: Identify latest stable/dev/requested version and freshness. The requested version's `publishedAt` is the young-release marker's last fallback (`Analysis.ReleaseAge`, ADR-0031)
 - Code: `DepsDevClient.fetchLatestRelease`, `DepsDevClient.fetchReleaseInfoBatch` (`internal/infrastructure/depsdev/release.go`)
 - Docs: <https://docs.deps.dev/api/v3alpha/>
 
@@ -108,9 +108,15 @@ Returns Project info for each projectKey (e.g., github.com/owner/repo):
 
 - Request: the full packument (scoped names as `@scope%2Fname`); the abbreviated install document has no per-version times
 - Fields consumed: `name`, `time` (per-version publish times, `created` / `modified` / `unpublished` skipped), the key set of `versions`, top-level `maintainers`, and per version `maintainers` and `_npmUser`
-- Purpose: record when every version was published, including unpublished ones whose `time` entry npm keeps (`Analysis.ReleaseHistory`); the lifecycle assessor reads it against the analysed version to detect a release burst across lines after a long silence, and `Analysis.EvaluateDormantRelease` turns it into the dormant-release marker (`Analysis.DormantRelease`). The current maintainers, each with the earliest publish time of a version naming its address, feed the optional maintainer domain check below (`ReleaseHistory.Maintainers`, ADR-0030). Each account's latest dated `_npmUser` publish, the `time` of versions missing from `versions` or naming no `_npmUser` (only when `versions` is present), and the current maintainer accounts give the publisher e-mail evidence attached to flagged findings (`ReleaseHistory.PublisherHistory`, read across every npm packument of the analysis batch; no extra request). One request per distinct npm package, for versioned PURLs only
+- Purpose: record when every version was published, including unpublished ones whose `time` entry npm keeps (`Analysis.ReleaseHistory`); the lifecycle assessor reads it against the analysed version to detect a release burst across lines after a long silence, and `Analysis.EvaluateDormantRelease` turns it into the dormant-release marker (`Analysis.DormantRelease`). The same timestamp can feed the young-release marker (`Analysis.ReleaseAge`, ADR-0031). The current maintainers, each with the earliest publish time of a version naming its address, feed the optional maintainer domain check below (`ReleaseHistory.Maintainers`, ADR-0030). Each account's latest dated `_npmUser` publish, the `time` of versions missing from `versions` or naming no `_npmUser` (only when `versions` is present), and the current maintainer accounts give the publisher e-mail evidence attached to flagged findings (`ReleaseHistory.PublisherHistory`, read across every npm packument of the analysis batch; no extra request). One request per distinct npm package, for versioned PURLs only
 - Code: `npmjs.Client.GetPublishHistory` (`internal/infrastructure/npmjs/client.go`), `IntegrationService.enrichReleaseHistory` (`internal/infrastructure/integration/populate_release_history.go`), `analysis.DetectDormantBurst` and `analysis.DetectFreshDormantRelease` (`internal/domain/analysis/release_history.go`). See [ADR-0026](adr/0026-dormant-release-burst.md) and [ADR-0028](adr/0028-dormant-release-marker.md)
 - Docs: <https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md>
+
+#### PyPI registry (GET https://pypi.org/pypi/<project>/json; conditional GET https://pypi.org/pypi/<project>/<version>/json)
+
+- Fields consumed for release age: `releases[version][].upload_time_iso_8601` in the project response and `urls[].upload_time_iso_8601` in the version response; the earliest valid file time for the analysed version becomes `Analysis.PyPIPublishedAt`.
+- Purpose: feed `Analysis.ReleaseAge` when a PyPI response is already fetched for the summary, inactivity classification, or version-yank evaluation. The release-age marker makes no new request. If neither response yields a time, deps.dev's requested-version time is used; absent that, JSON reports `unknown` (ADR-0031).
+- Code: `pypi.Client.GetProject` and `GetVersion` (`internal/infrastructure/pypi/client.go`), `IntegrationService.enrichPyPISummary` (`internal/infrastructure/integration/populate_summary.go`), and `eolevaluator.Evaluator` (`internal/infrastructure/eolevaluator/evaluator.go`).
 
 #### IANA — RDAP bootstrap registry (GET https://data.iana.org/rdap/dns.json)
 
