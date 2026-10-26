@@ -345,6 +345,9 @@ type PublishHistory struct {
 	// VersionPublisher maps version to its "_npmUser". It is nil unless the
 	// history was built by ParsePublishHistoryWithVersions.
 	VersionPublisher map[string]Person
+	// PublisherKinds maps visible versions to their publisher kind, kept in
+	// both modes; see analysis.ReleaseHistory.PublisherKinds.
+	PublisherKinds map[string]analysis.VersionPublisherKind
 	// PublisherHistory summarizes each publisher account's latest dated
 	// publishes and the publish times of versions whose publisher is not
 	// visible.
@@ -477,7 +480,9 @@ func extractNpmSuccessor(msg string) string {
 // "_npmUser" are kept, as raw JSON: a packument with thousands of versions runs
 // to megabytes, and the rest of the manifest is not needed here. Per-version
 // identities are folded into FirstSeen, and each "_npmUser" into
-// PublisherHistory; the identities themselves are not retained.
+// PublisherHistory. Each version's publisher kind is kept in PublisherKinds;
+// full identities (VersionPublisher) are kept only by
+// ParsePublishHistoryWithVersions.
 func parsePublishHistory(r io.Reader) (*PublishHistory, error) {
 	return decodePublishHistory(r, false)
 }
@@ -500,6 +505,9 @@ func decodePublishHistory(r io.Reader, retainVersions bool) (*PublishHistory, er
 	if retainVersions {
 		h.VersionMaintainers = make(map[string][]Person, len(doc.Versions))
 		h.VersionPublisher = make(map[string]Person, len(doc.Versions))
+	}
+	if doc.Versions != nil {
+		h.PublisherKinds = make(map[string]analysis.VersionPublisherKind, len(doc.Versions))
 	}
 	h.Maintainers = decodePeople(doc.Maintainers)
 	// A missing or null "versions" leaves Installable nil (unknown), so a
@@ -533,6 +541,10 @@ func decodePublishHistory(r io.Reader, retainVersions bool) (*PublishHistory, er
 			h.VersionMaintainers[v] = people
 		}
 		publisher := decodePerson(manifest.NPMUser)
+		account := analysis.StripControlRunes(publisher.Name)
+		if kind := analysis.ClassifyVersionPublisher(publisher.Name); kind != analysis.VersionPublisherUnknown {
+			h.PublisherKinds[v] = kind
+		}
 		if retainVersions {
 			h.VersionPublisher[v] = publisher
 		}
@@ -540,7 +552,7 @@ func decodePublishHistory(r io.Reader, retainVersions bool) (*PublishHistory, er
 		if at.IsZero() {
 			continue
 		}
-		if account := analysis.StripControlRunes(publisher.Name); account != "" {
+		if account != "" {
 			h.PublisherHistory.AddPublisherPublish(account, publisherPublish(doc.Name, v, at, publisher.Email))
 		} else {
 			if h.unattributed == nil {

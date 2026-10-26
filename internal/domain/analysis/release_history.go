@@ -40,6 +40,11 @@ type ReleaseHistory struct {
 	Maintainers []MaintainerAddress
 	// PublisherHistory summarizes visible publishers and hidden version times.
 	PublisherHistory PublisherPackageHistory
+	// PublisherKinds maps visible versions to ClassifyVersionPublisher of their
+	// _npmUser.name. The map is nil when history was not obtained or versions is
+	// missing or null. A version is absent when it is not in versions, lacks
+	// _npmUser, has a legacy string _npmUser, or its name classifies as unknown.
+	PublisherKinds map[string]VersionPublisherKind
 }
 
 // DormantBurst describes a release that came out after a long silence, together

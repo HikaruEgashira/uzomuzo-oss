@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,6 +169,13 @@ func TestMaintainerDomainPublisherEvidenceUsesAllFetchedPackuments(t *testing.T)
 	if e == nil || e.Status != domain.PublisherEmailObserved || e.DomainRelation != domain.PublisherDomainDifferent || e.RegistrationRelation != domain.PublisherRegistrationAfter || e.LatestObserved == nil || e.LatestObserved.Package != "example" {
 		t.Fatalf("evidence=%+v", e)
 	}
+	publish := a.MaintainerDomain.Flagged()[0].PackagePublish
+	if publish == nil || publish.Status != domain.PackagePublishFound || !publish.LastPublishedAt.Equal(older) || publish.Version != "12.0.0" {
+		t.Fatalf("package publish=%+v", publish)
+	}
+	if got := a.MaintainerDomain.AnalysedVersionPublisher; got != domain.VersionPublisherUnknown {
+		t.Errorf("version publisher=%q", got)
+	}
 }
 
 func TestMaintainerDomainPublisherEvidenceUsesHiddenFindingSource(t *testing.T) {
@@ -188,4 +196,65 @@ func TestMaintainerDomainPublisherEvidenceUsesHiddenFindingSource(t *testing.T) 
 	if len(findings) != 1 || findings[0].PublisherEmailEvidence == nil || !findings[0].PublisherEmailEvidence.NewerPublishUnknown {
 		t.Fatalf("findings=%+v", findings)
 	}
+}
+
+func TestMaintainerDomainUsesAnalysedVersionPublisher(t *testing.T) {
+	at := time.Date(2025, 3, 1, 10, 0, 0, 0, time.UTC)
+	address := domain.MaintainerAddress{Account: "alice", Email: "alice@example.test", FirstSeen: at}
+	h := &domain.ReleaseHistory{Registry: domain.RegistryNpm, Maintainers: []domain.MaintainerAddress{address}, PublisherKinds: map[string]domain.VersionPublisherKind{"1.0.0": domain.VersionPublisherOther, "2.0.0": domain.VersionPublisherTrustedPublishing}}
+	a := &domain.Analysis{Package: &domain.Package{Version: "1.0.0"}, ReleaseHistory: h}
+	s := &AnalysisService{maintainerDomainChecker: &fakeMaintainerDomainChecker{registered: at.Add(time.Hour)}}
+	s.checkMaintainerDomains(context.Background(), map[string]*domain.Analysis{"a": a}, at.Add(2*time.Hour))
+	if a.MaintainerDomain == nil || a.MaintainerDomain.AnalysedVersionPublisher != domain.VersionPublisherOther || len(a.MaintainerDomain.Findings) != 1 {
+		t.Fatalf("result=%+v", a.MaintainerDomain)
+	}
+	if got := a.MaintainerDomainNotices(); len(got) != 1 || strings.Contains(got[0], "trusted publishing") {
+		t.Errorf("notice=%q", got)
+	}
+	a.Package.Version = "2.0.0"
+	s.checkMaintainerDomains(context.Background(), map[string]*domain.Analysis{"a": a}, at.Add(2*time.Hour))
+	if a.MaintainerDomain.AnalysedVersionPublisher != domain.VersionPublisherTrustedPublishing {
+		t.Errorf("version publisher=%q", a.MaintainerDomain.AnalysedVersionPublisher)
+	}
+}
+
+// TestMaintainerDomainPackagePublishEdges covers an undated publish, an
+// unnamed account and a missing analysed package.
+func TestMaintainerDomainPackagePublishEdges(t *testing.T) {
+	at := time.Date(2025, 3, 1, 10, 0, 0, 0, time.UTC)
+	check := func(t *testing.T, a *domain.Analysis) domain.MaintainerDomainFinding {
+		t.Helper()
+		s := &AnalysisService{maintainerDomainChecker: &fakeMaintainerDomainChecker{registered: at.Add(time.Hour)}}
+		s.checkMaintainerDomains(context.Background(), map[string]*domain.Analysis{"a": a}, at.Add(2*time.Hour))
+		if a.MaintainerDomain == nil || len(a.MaintainerDomain.Flagged()) != 1 {
+			t.Fatalf("result=%+v", a.MaintainerDomain)
+		}
+		return a.MaintainerDomain.Flagged()[0]
+	}
+	t.Run("undated publish is not_found", func(t *testing.T) {
+		h := &domain.ReleaseHistory{Registry: domain.RegistryNpm, Maintainers: []domain.MaintainerAddress{{Account: "alice", Email: "alice@example.test", FirstSeen: at}}, PublisherKinds: map[string]domain.VersionPublisherKind{"1.0.0": domain.VersionPublisherOther}}
+		a := &domain.Analysis{Package: &domain.Package{Version: "1.0.0"}, ReleaseHistory: h}
+		f := check(t, a)
+		if f.PackagePublish == nil || f.PackagePublish.Status != domain.PackagePublishNotFound {
+			t.Fatalf("package publish=%+v", f.PackagePublish)
+		}
+		if got := a.MaintainerDomainNotices(); len(got) != 1 || !strings.Contains(got[0], "show no dated publish by this account.") {
+			t.Errorf("notice=%q", got)
+		}
+	})
+	t.Run("unnamed account has no package publish", func(t *testing.T) {
+		h := &domain.ReleaseHistory{Registry: domain.RegistryNpm, Maintainers: []domain.MaintainerAddress{{Email: "x@example.test", FirstSeen: at}}}
+		f := check(t, &domain.Analysis{Package: &domain.Package{Version: "1.0.0"}, ReleaseHistory: h})
+		if f.PackagePublish != nil {
+			t.Errorf("package publish=%+v", f.PackagePublish)
+		}
+	})
+	t.Run("nil package is unknown", func(t *testing.T) {
+		h := &domain.ReleaseHistory{Registry: domain.RegistryNpm, Maintainers: []domain.MaintainerAddress{{Account: "alice", Email: "alice@example.test", FirstSeen: at}}, PublisherKinds: map[string]domain.VersionPublisherKind{"1.0.0": domain.VersionPublisherTrustedPublishing}}
+		a := &domain.Analysis{ReleaseHistory: h}
+		check(t, a)
+		if got := a.MaintainerDomain.AnalysedVersionPublisher; got != domain.VersionPublisherUnknown {
+			t.Errorf("version publisher=%q", got)
+		}
+	})
 }

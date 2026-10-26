@@ -2,6 +2,8 @@ package npmjs
 
 import (
 	"context"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
 )
 
 // TestParsePublishHistoryMaintainers checks first appearance and current maintainers.
@@ -70,6 +74,35 @@ func TestParsePublishHistoryLegacyMaintainerShapes(t *testing.T) {
 	}
 	if len(h.Maintainers) != 0 || len(h.FirstSeen) != 0 || len(h.PublishedAt) != 1 {
 		t.Errorf("history=%+v", h)
+	}
+}
+
+func TestParsePublishHistoryPublisherNames(t *testing.T) {
+	t.Parallel()
+	const raw = `{"time":{"1":"2025-01-01T00:00:00Z","2":"2025-01-02T00:00:00Z"},"versions":{"1":{"_npmUser":{"name":"GitHub\u0000 Actions"}},"2":{"_npmUser":{"name":"alice"}},"3":{"_npmUser":{"name":"GitHub Actions"}},"4":{"_npmUser":"legacy"},"5":{}}}`
+	for _, parse := range []struct {
+		name string
+		fn   func(io.Reader) (*PublishHistory, error)
+	}{
+		{"scan", parsePublishHistory},
+		{"measurement", ParsePublishHistoryWithVersions},
+	} {
+		t.Run(parse.name, func(t *testing.T) {
+			h, err := parse.fn(strings.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]analysis.VersionPublisherKind{"1": analysis.VersionPublisherOther, "2": analysis.VersionPublisherOther, "3": analysis.VersionPublisherTrustedPublishing}
+			if !maps.Equal(h.PublisherKinds, want) {
+				t.Errorf("publisher kinds=%v", h.PublisherKinds)
+			}
+			if _, ok := h.PublisherHistory.Latest["GitHub Actions"]; !ok {
+				t.Error("dated sanitized publisher missing")
+			}
+			if parse.name == "scan" && h.VersionPublisher != nil {
+				t.Error("scan retained measurement identities")
+			}
+		})
 	}
 }
 
@@ -157,7 +190,8 @@ func TestGetPublishHistory(t *testing.T) {
 }
 
 // TestParsePublishHistory_Versions pins that a missing or null "versions"
-// leaves Installable nil (unknown), while "{}" is a known-empty set.
+// leaves Installable and PublisherKinds nil (unknown), while "{}" is a
+// known-empty set.
 func TestParsePublishHistory_Versions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -180,6 +214,9 @@ func TestParsePublishHistory_Versions(t *testing.T) {
 			}
 			if got := h.Installable == nil; got != tt.wantNil {
 				t.Fatalf("Installable nil = %v, want %v", got, tt.wantNil)
+			}
+			if got := h.PublisherKinds == nil; got != tt.wantNil {
+				t.Errorf("PublisherKinds nil = %v, want %v", got, tt.wantNil)
 			}
 			if !tt.wantNil && len(h.Installable) != tt.wantLen {
 				t.Errorf("len(Installable) = %d, want %d", len(h.Installable), tt.wantLen)
