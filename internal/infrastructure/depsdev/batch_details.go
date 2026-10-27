@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	neturl "net/url"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -513,73 +514,155 @@ func (c *DepsDevClient) buildCompleteResult(purl string, packageResp *PackageRes
 	return result
 }
 
-// convertRepoURLToProjectKey converts repository URL to deps.dev project key format
+var (
+	// repoURLSchemes are the schemes convertRepoURLToProjectKey accepts.
+	repoURLSchemes = map[string]bool{
+		"http": true, "https": true, "git": true, "ssh": true,
+		"git+http": true, "git+https": true, "git+ssh": true,
+	}
+	// githubOwnerPattern and githubRepoPattern accept only the characters GitHub
+	// allows in account and repository names (matched after lowercasing).
+	githubOwnerPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+	githubRepoPattern  = regexp.MustCompile(`^[a-z0-9._-]+$`)
+)
+
+// convertRepoURLToProjectKey converts a repository URL to the deps.dev project key
+// github.com/<owner>/<repo> (lowercased, ".git" suffix removed).
+//
+// The host must be exactly github.com or www.github.com (case-insensitive, any port,
+// optional trailing dot)
+// and the scheme, if any, one of repoURLSchemes; any other host or scheme, or a path
+// without valid owner and repository segments, returns "".
+// Supported inputs:
+//   - https://github.com/owner/repo, http://, git://, git+https:// (optionally with user@ and :port)
+//   - ssh://git@github.com/owner/repo, git+ssh://git@github.com/owner/repo
+//   - a scheme wrapped around another one, e.g. https://git+ssh://git@github.com/owner/repo
+//   - ssh://git@github.com:owner/repo, https://github.com:owner/repo (scp-style path after an allowed scheme)
+//   - git@github.com:owner/repo, github.com:owner/repo, with any user@ and with or without www. (scp-style, no scheme)
+//   - github.com/owner/repo, git@github.com/owner/repo, //github.com/owner/repo (no scheme)
+//
+// Query strings, fragments, trailing slashes and path segments below owner/repo are ignored.
 func convertRepoURLToProjectKey(repoURL string) string {
-	// Normalize and extract the GitHub owner/repo into github.com/owner/repo
-	// Supports inputs like:
-	// - https://github.com/owner/repo
-	// - http://github.com/owner/repo
-	// - github.com/owner/repo
-	// - git+ssh://git@github.com/owner/repo
-	// - ssh://git@github.com/owner/repo
-	// - git@github.com:owner/repo
-	s := strings.ToLower(strings.TrimSpace(repoURL))
-
-	// Remove fragment and query early
-	if i := strings.Index(s, "#"); i >= 0 {
+	s := strings.TrimSpace(repoURL)
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
 		s = s[:i]
 	}
-	if i := strings.Index(s, "?"); i >= 0 {
-		s = s[:i]
+	if s == "" {
+		return ""
 	}
-
-	// Remove common scheme prefixes
-	for _, prefix := range []string{
-		"https://", "http://", "git+ssh://", "ssh://",
-	} {
-		if strings.HasPrefix(s, prefix) {
-			s = strings.TrimPrefix(s, prefix)
+	// asciiLower keeps byte offsets in lower valid in s, and never folds a
+	// non-ASCII rune (e.g. U+212A KELVIN SIGN) into an ASCII letter.
+	lower := asciiLower(s)
+	// Peel an outer scheme wrapped around another one (https://git+ssh://...);
+	// the inner URL is then parsed and host-checked as a whole.
+	for {
+		scheme, rest, ok := cutURLScheme(lower)
+		inner, _, hasInner := cutURLScheme(rest)
+		if !ok || !hasInner || !repoURLSchemes[scheme] || !repoURLSchemes[inner] {
 			break
 		}
+		s = s[len(scheme)+len("://"):]
+		lower = rest
 	}
-
-	// Drop leading user@ if present (e.g., git@github.com/...)
-	s = strings.TrimPrefix(s, "git@")
-
-	// If the string contains github.com anywhere, extract from there
-	idx := strings.Index(s, "github.com")
-	if idx == -1 {
+	// Only known schemes are trusted, so a host disguised as a scheme
+	// (evil.example://github.com/...) or foo://github.com/... yields no key.
+	scheme, _, hasScheme := cutURLScheme(lower)
+	if hasScheme && !repoURLSchemes[scheme] {
 		return ""
 	}
-	key := s[idx:]
 
-	// Normalize separator after host: allow github.com:owner/repo or github.com/owner/repo
-	if strings.HasPrefix(key, "github.com:") {
-		key = strings.Replace(key, "github.com:", "github.com/", 1)
-	}
-
-	// Trim any trailing slashes
-	key = strings.TrimRight(key, "/")
-
-	// Ensure we only keep host/owner/repo even if deeper paths appear
-	if strings.HasPrefix(key, "github.com/") {
-		rest := strings.TrimPrefix(key, "github.com/")
-		parts := strings.Split(rest, "/")
-		if len(parts) >= 2 {
-			owner := parts[0]
-			repo := strings.TrimSuffix(parts[1], ".git")
-			return "github.com/" + owner + "/" + repo
+	if !hasScheme {
+		if path, ok := trimGitHubSCPPrefix(s); ok {
+			return githubProjectKeyFromPath(path)
 		}
-		// Not enough path segments to form owner/repo
+		if !strings.HasPrefix(s, "//") {
+			s = "https://" + s
+		}
+	}
+
+	parsed, err := neturl.Parse(s)
+	if err != nil {
+		// ssh://git@github.com:owner/repo is not a valid URL ("owner" is not a port),
+		// but it is a common way to write an scp-style path behind a scheme.
+		if hasScheme {
+			if path, ok := trimGitHubSCPPrefix(s[len(scheme)+len("://"):]); ok {
+				return githubProjectKeyFromPath(path)
+			}
+		}
 		return ""
 	}
-	return ""
+	if !isGitHubHost(parsed.Hostname()) {
+		return ""
+	}
+	return githubProjectKeyFromPath(parsed.EscapedPath())
+}
+
+// trimGitHubSCPPrefix strips an scp-style "[user@][www.]github.com:" prefix and
+// reports whether one was present. As in git, "host:path" without a scheme is
+// always scp-style, so github.com:123/repo names owner "123", not port 123.
+func trimGitHubSCPPrefix(s string) (string, bool) {
+	lower := asciiLower(s)
+	if at := strings.IndexByte(lower, '@'); at > 0 && !strings.ContainsAny(lower[:at], "/:") {
+		s, lower = s[at+1:], lower[at+1:]
+	}
+	for _, prefix := range []string{"github.com:", "www.github.com:"} {
+		if strings.HasPrefix(lower, prefix) {
+			return s[len(prefix):], true
+		}
+	}
+	return "", false
+}
+
+// cutURLScheme splits lower at its leading "<scheme>://". It reports false when
+// lower does not start with a syntactically valid (RFC 3986) scheme, so a "://"
+// further along, e.g. in a path, is not mistaken for one.
+func cutURLScheme(lower string) (scheme, rest string, ok bool) {
+	scheme, rest, ok = strings.Cut(lower, "://")
+	if !ok || scheme == "" || scheme[0] < 'a' || scheme[0] > 'z' ||
+		strings.Trim(scheme, "abcdefghijklmnopqrstuvwxyz0123456789+.-") != "" {
+		return "", "", false
+	}
+	return scheme, rest, true
+}
+
+// asciiLower lowercases only the ASCII letters A-Z, leaving every other byte as is.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// isGitHubHost reports whether host (without port, optionally with a trailing
+// dot) is github.com or www.github.com.
+func isGitHubHost(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	return strings.EqualFold(host, "github.com") || strings.EqualFold(host, "www.github.com")
+}
+
+// githubProjectKeyFromPath builds github.com/<owner>/<repo> from the first two
+// segments of path, or returns "" when they are missing or not valid GitHub names.
+func githubProjectKeyFromPath(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	owner := asciiLower(parts[0])
+	repo := strings.TrimSuffix(asciiLower(parts[1]), ".git")
+	if !githubOwnerPattern.MatchString(owner) || !githubRepoPattern.MatchString(repo) || repo == "." || repo == ".." {
+		return ""
+	}
+	return "github.com/" + owner + "/" + repo
 }
 
 // normalizeRepoURLForProject converts any repo URL into canonical form for project lookups:
-// - Uses common.NormalizeRepositoryURL to clean schemes, .git, fragments, etc.
-// - For GitHub URLs, trims to https://github.com/<owner>/<repo>
-// - For non-GitHub URLs, returns the normalized URL unchanged
+//   - Uses common.NormalizeRepositoryURL to clean schemes, .git, fragments, etc.
+//   - When convertRepoURLToProjectKey yields a key, returns https://<key>
+//     (https://github.com/<owner>/<repo>, lowercased, www. dropped)
+//   - Otherwise (non-GitHub host or no valid owner/repo), returns the normalized URL unchanged
 func normalizeRepoURLForProject(raw string) string {
 	if raw == "" {
 		return ""

@@ -89,6 +89,186 @@ func TestConvertRepoURLToProjectKey(t *testing.T) {
 			expected: "github.com/owner/repo",
 		},
 		{
+			name:     "github_host_with_port",
+			input:    "https://github.com:443/Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "github_com_embedded_in_path_returns_empty",
+			input:    "https://evil.example/path/github.com/Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "notgithub_domain_returns_empty",
+			input:    "https://notgithub.com/Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "scp_style_without_user",
+			input:    "github.com:Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scp_style_with_git_suffix",
+			input:    "git@github.com:Owner/Repo.git",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scp_style_after_ssh_scheme",
+			input:    "ssh://git@github.com:Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scp_style_after_git_ssh_scheme",
+			input:    "git+ssh://git@github.com:Owner/Repo.git",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "ssh_scheme_with_port",
+			input:    "ssh://git@github.com:22/Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scp_style_numeric_owner",
+			input:    "github.com:123/Repo/tree/main",
+			expected: "github.com/123/repo",
+		},
+		{
+			name:     "git_https_scheme",
+			input:    "git+https://github.com/Owner/Repo.git",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "git_scheme",
+			input:    "git://github.com/Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "userinfo_with_password",
+			input:    "https://user:pw@github.com/Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "www_github_host",
+			input:    "https://www.github.com/Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "uppercase_git_suffix",
+			input:    "https://github.com/Owner/Repo.GIT",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "userinfo_hiding_real_host_returns_empty",
+			input:    "https://git@github.com:443@evil.example/Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "github_subdomain_returns_empty",
+			input:    "https://gist.github.com/Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "github_prefixed_host_returns_empty",
+			input:    "https://github.com.evil.example/Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "escaped_slash_in_repo_returns_empty",
+			input:    "https://github.com/Owner/Repo%2Fx",
+			expected: "",
+		},
+		{
+			name:     "space_in_repo_returns_empty",
+			input:    "https://github.com/Owner/Repo with space",
+			expected: "",
+		},
+		{
+			name:     "single_segment_returns_empty",
+			input:    "https://github.com/Owner",
+			expected: "",
+		},
+		{
+			name:     "git_suffix_only_returns_empty",
+			input:    "https://github.com/Owner/.git",
+			expected: "",
+		},
+		{
+			name:     "host_disguised_as_inner_scheme_returns_empty",
+			input:    "https://evil.example://github.com/Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "unknown_scheme_returns_empty",
+			input:    "foo://github.com/Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "non_ascii_after_nested_scheme_does_not_panic",
+			input:    "https://git+ssh://\u023a\u023a\u023a\u023a\u023a\u023a\u023a\u023a\u023a\u023a\u023a\u023a://x",
+			expected: "",
+		},
+		{
+			name:     "non_ascii_below_owner_repo_is_ignored",
+			input:    "https://github.com/Owner/Repo/tree/main/\u65e5\u672c\u8a9e.md",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "kelvin_sign_not_folded_to_ascii_k_returns_empty",
+			input:    "git@github.com:Owner/\u212apo",
+			expected: "",
+		},
+		{
+			name:     "scp_style_www_host",
+			input:    "git@www.github.com:Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scp_style_after_https_scheme",
+			input:    "https://github.com:Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "non_ascii_lookalike_host_returns_empty",
+			input:    "git@g\u0130thub.com:Owner/Repo",
+			expected: "",
+		},
+		{
+			name:     "uppercase_nested_scheme",
+			input:    "HTTPS://GIT+SSH://git@github.com/Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "protocol_relative",
+			input:    "//github.com/Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scheme_like_text_below_owner_repo_is_ignored",
+			input:    "//github.com/Owner/Repo/tree/main/docs/http://example",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scheme_like_text_in_scp_path_is_ignored",
+			input:    "git@github.com:Owner/Repo/blob/main/http://example",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scp_style_non_git_user",
+			input:    "org-1@github.com:Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "trailing_dot_host",
+			input:    "https://github.com./Owner/Repo",
+			expected: "github.com/owner/repo",
+		},
+		{
+			name:     "scp_style_user_hiding_real_host_returns_empty",
+			input:    "git@evil.example:github.com:Owner/Repo",
+			expected: "",
+		},
+		{
 			name:     "non_github_domain_returns_empty",
 			input:    "https://gitlab.com/Owner/Repo",
 			expected: "",
