@@ -194,7 +194,14 @@ func (r *sourceAnalyzerRecorder) PyPIProjectNames(ctx context.Context, sourceRoo
 
 func TestRun_PythonSelfDependenciesAreFilteredBeforeHealthLookup(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[project]\nname = \"Local_Project\"\n"), 0o644); err != nil {
+	pyproject := `[project]
+name = "Local_Project"
+description = """
+name = "shadow-project"
+"""
+urls = { Homepage = "https://example.invalid" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,6 +209,7 @@ func TestRun_PythonSelfDependenciesAreFilteredBeforeHealthLookup(t *testing.T) {
 		rootPURL        = "pkg:pypi/Root_Project@0.1.0"
 		selfPURL        = "pkg:pypi/root-project@0.2.0"
 		projectPURL     = "pkg:pypi/local.project@1.2.3"
+		shadowPURL      = "pkg:pypi/shadow-project@0.1.0"
 		requestsPURL    = "pkg:pypi/requests@2.31.0"
 		npmSameNamePURL = "pkg:npm/local-project@1.2.3"
 	)
@@ -212,13 +220,15 @@ func TestRun_PythonSelfDependenciesAreFilteredBeforeHealthLookup(t *testing.T) {
 		Components: []sbomgraph.Component{
 			{BOMRef: "self", PURL: selfPURL},
 			{BOMRef: "project", PURL: projectPURL},
+			{BOMRef: "shadow", PURL: shadowPURL},
 			{BOMRef: "requests", PURL: requestsPURL},
 			{BOMRef: "npm-same-name", PURL: npmSameNamePURL},
 		},
 		Dependencies: []sbomgraph.Dependency{
-			{Ref: "root", DependsOn: []string{"self", "project", "requests", "npm-same-name"}},
+			{Ref: "root", DependsOn: []string{"self", "project", "shadow", "requests", "npm-same-name"}},
 			{Ref: "self"},
 			{Ref: "project"},
+			{Ref: "shadow"},
 			{Ref: "requests"},
 			{Ref: "npm-same-name"},
 		},
@@ -250,7 +260,7 @@ func TestRun_PythonSelfDependenciesAreFilteredBeforeHealthLookup(t *testing.T) {
 			t.Errorf("self dependency %s remains in diet entries", purl)
 		}
 	}
-	for _, purl := range []string{requestsPURL, npmSameNamePURL} {
+	for _, purl := range []string{shadowPURL, requestsPURL, npmSameNamePURL} {
 		if _, ok := entries[purl]; !ok {
 			t.Errorf("non-Python-self dependency %s was filtered", purl)
 		}
@@ -260,14 +270,14 @@ func TestRun_PythonSelfDependenciesAreFilteredBeforeHealthLookup(t *testing.T) {
 			t.Errorf("self dependency %s reached source analysis", purl)
 		}
 	}
-	for _, purl := range []string{requestsPURL, npmSameNamePURL} {
+	for _, purl := range []string{shadowPURL, requestsPURL, npmSameNamePURL} {
 		if _, ok := sourceAnalyzer.importPaths[purl]; !ok {
 			t.Errorf("non-Python-self dependency %s was filtered before source analysis", purl)
 		}
 	}
 
 	slices.Sort(lookup.purls)
-	wantLookups := []string{npmSameNamePURL, requestsPURL}
+	wantLookups := []string{npmSameNamePURL, requestsPURL, shadowPURL}
 	slices.Sort(wantLookups)
 	if !slices.Equal(lookup.purls, wantLookups) {
 		t.Errorf("health lookup PURLs = %v, want %v", lookup.purls, wantLookups)

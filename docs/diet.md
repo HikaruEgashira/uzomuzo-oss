@@ -160,7 +160,7 @@ Parses the CycloneDX SBOM to build a dependency DAG. For each direct dependency,
 - **Exclusive transitive count** — dependencies removed *only* if this dep is removed
 - **Shared transitive count** — dependencies shared with other direct deps
 - **Total transitive count** — all reachable transitive dependencies
-- PyPI dependencies matching the root component or a static `[project].name` in `pyproject.toml` under `--source` are excluded before source and health analysis, using PEP 503 name normalization. Workspace names are read only from simple single-line quoted values; files with triple-quote or brace markers are skipped as ambiguous.
+- PyPI dependencies matching the root component or a static `[project].name` in valid `pyproject.toml` files under `--source` are excluded before source and health analysis, using PEP 503 name normalization. Invalid TOML files are ignored for workspace-name matching.
 
 ### Phase 2: Source Coupling (tree-sitter)
 

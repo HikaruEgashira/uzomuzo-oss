@@ -3,16 +3,14 @@
 package treesitter
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // PyPIProjectNames returns names declared by [project].name tables under sourceRoot.
@@ -66,92 +64,19 @@ func (a *Analyzer) PyPIProjectNames(ctx context.Context, sourceRoot string) ([]s
 }
 
 func extractPyPIProjectName(data []byte) (string, bool) {
-	if bytes.ContainsAny(data, "{}") || bytes.Contains(data, []byte(`"""`)) || bytes.Contains(data, []byte(`'''`)) {
-		// Compound TOML values can make nested keys look like top-level keys.
+	var manifest map[string]any
+	if err := toml.Unmarshal(data, &manifest); err != nil {
 		return "", false
 	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 1024), int(largeFileBytes))
-	section := ""
-	for scanner.Scan() {
-		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "[") {
-			end := strings.IndexByte(line, ']')
-			if end < 0 {
-				section = ""
-				continue
-			}
-			section = strings.TrimSpace(line[1:end])
-			continue
-		}
-		if section != "project" {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(key) != "name" {
-			continue
-		}
-		return parseTOMLString(strings.TrimSpace(value))
-	}
-	return "", false
-}
-
-func parseTOMLString(value string) (string, bool) {
-	if len(value) < 2 || strings.HasPrefix(value, `"""`) || strings.HasPrefix(value, `'''`) {
+	project, ok := manifest["project"].(map[string]any)
+	if !ok {
 		return "", false
 	}
-	if value[0] == '"' {
-		parsed, err := strconv.Unquote(value)
-		return parsed, err == nil
-	}
-	if value[0] != '\'' || value[len(value)-1] != '\'' {
+	name, ok := project["name"].(string)
+	if !ok || name == "" {
 		return "", false
 	}
-	parsed := value[1 : len(value)-1]
-	if strings.ContainsRune(parsed, '\'') {
-		return "", false
-	}
-	return parsed, true
-}
-
-func stripTOMLComment(line string) string {
-	var quote byte
-	escaped := false
-	for i := 0; i < len(line); i++ {
-		char := line[i]
-		if quote == '"' {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if char == '\\' {
-				escaped = true
-				continue
-			}
-			if char == quote {
-				quote = 0
-			}
-			continue
-		}
-		if quote != 0 {
-			if char == quote {
-				quote = 0
-			}
-			continue
-		}
-		if char == '"' || char == '\'' {
-			quote = char
-			continue
-		}
-		if char == '#' {
-			return line[:i]
-		}
-	}
-	return line
+	return name, true
 }
 
 func isPythonEnvironmentDir(name string) bool {

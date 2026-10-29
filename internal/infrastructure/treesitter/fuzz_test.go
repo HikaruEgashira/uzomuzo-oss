@@ -54,6 +54,10 @@ func FuzzAnalyzeJavaScriptRequire(f *testing.F) {
 func FuzzExtractPyPIProjectName(f *testing.F) {
 	for _, seed := range []string{
 		"[project]\nname = \"sample-project\"\n",
+		"[project]\ndescription = \"\"\"\nname = \"hidden\"\n\"\"\"\nname = \"sample-project\"\n",
+		"[project]\nurls = { Home = \"https://example.invalid\" }\nname = \"sample-project\"\n",
+		"project.name = \"sample-project\"\n",
+		"[project]\nname = \"first\"\nname = \"duplicate\"\n",
 		"[tool.poetry]\nname = \"ignored\"\n",
 		"[project]\nname = 'sample_project' # comment\n",
 		"",

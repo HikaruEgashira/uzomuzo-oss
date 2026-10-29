@@ -36,12 +36,32 @@ func TestExtractPyPIProjectName(t *testing.T) {
 			ok:   true,
 		},
 		{
-			name: "multiline string makes project name uncertain",
-			src:  "[tool.example]\ndescription = \"\"\"\n[project]\nname = \"shadow\"\n\"\"\"\n[project]\nname = \"real\"\n",
+			name: "multiline description with key-like text",
+			src:  "[project]\ndescription = \"\"\"\nname = \"shadow\"\n\"\"\"\nname = \"real\"\n",
+			want: "real",
+			ok:   true,
 		},
 		{
-			name: "inline table makes project name uncertain",
-			src:  "[project]\nmetadata = {\nname = \"shadow\"\n}\nname = \"real\"\n",
+			name: "inline table does not hide project name",
+			src:  "[project]\nurls = { Homepage = \"https://example.invalid\", Documentation = \"https://docs.example.invalid\" }\nname = \"real\"\n",
+			want: "real",
+			ok:   true,
+		},
+		{
+			name: "quoted project key",
+			src:  "[project]\n\"name\" = \"quoted-project\"\n",
+			want: "quoted-project",
+			ok:   true,
+		},
+		{
+			name: "dotted project key",
+			src:  "project.name = \"dotted-project\"\n",
+			want: "dotted-project",
+			ok:   true,
+		},
+		{
+			name: "invalid TOML is ignored",
+			src:  "[project]\nname = \"first\"\nname = \"duplicate\"\n",
 		},
 		{
 			name: "tool table without project table",
@@ -70,9 +90,16 @@ func TestExtractPyPIProjectName(t *testing.T) {
 func TestAnalyzer_PyPIProjectNames(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"pyproject.toml":              "[project]\nname = \"Root_Project\"\n",
-		"packages/api/pyproject.toml": "[project]\nname = 'Local.Project'\n",
-		"tools/pyproject.toml":        "[tool.poetry]\nname = \"not-a-project-table\"\n",
+		"pyproject.toml": `[project]
+name = "Root_Project"
+description = """
+name = "not-the-project"
+"""
+urls = { Homepage = "https://example.invalid" }
+`,
+		"packages/api/pyproject.toml":                               "[project]\nname = 'Local.Project'\n",
+		"tools/pyproject.toml":                                      "[tool.poetry]\nname = \"not-a-project-table\"\n",
+		"broken/pyproject.toml":                                     "[project]\nname = \"not-a-project\"\nname = \"duplicate\"\n",
 		".venv/lib/python/site-packages/third-party/pyproject.toml": "[project]\nname = \"third-party\"\n",
 	}
 	for path, contents := range files {
