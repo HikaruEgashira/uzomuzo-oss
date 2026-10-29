@@ -49,6 +49,8 @@ type DietInput struct {
 	// (Go 1.24+). These are dev/CI executables that intentionally have zero
 	// source imports and should not be flagged as unused.
 	ToolDeps map[string]struct{}
+	// GoIndirectDeps contains normalized module names required only indirectly.
+	GoIndirectDeps map[string]struct{}
 }
 
 // Service orchestrates the 4-phase diet pipeline.
@@ -85,11 +87,25 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 	// Filter workspace-local packages (npm monorepo internals) before analysis.
 	preFilterCount := len(graphResult.DirectDeps)
 	graphResult.DirectDeps = filterWorkspaceDeps(graphResult.DirectDeps)
+	workspaceFiltered := preFilterCount - len(graphResult.DirectDeps)
+	goIndirectFiltered := 0
+	kept := graphResult.DirectDeps[:0]
+	for _, purl := range graphResult.DirectDeps {
+		name, ecosystem, _ := parsePURLParts(purl)
+		if _, excluded := input.GoIndirectDeps[strings.ToLower(name)]; ecosystem == "golang" && excluded {
+			goIndirectFiltered++
+			delete(graphResult.Metrics, purl)
+			continue
+		}
+		kept = append(kept, purl)
+	}
+	graphResult.DirectDeps = kept
 
 	slog.Info("Phase 1 complete",
 		"direct", len(graphResult.DirectDeps),
 		"totalTransitive", graphResult.TotalTransitive,
-		"workspaceDepsFiltered", preFilterCount-len(graphResult.DirectDeps),
+		"workspaceDepsFiltered", workspaceFiltered,
+		"go_indirect_filtered", goIndirectFiltered,
 	)
 
 	// Phase 2 & 3: run concurrently (both only depend on graphResult from Phase 1)

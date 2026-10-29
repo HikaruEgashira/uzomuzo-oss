@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/future-architect/uzomuzo-oss/internal/application"
 	domain "github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
 	domaindiet "github.com/future-architect/uzomuzo-oss/internal/domain/diet"
 )
@@ -24,11 +25,13 @@ func (s *stubGraphAnalyzer) AnalyzeGraph(_ context.Context, _ []byte) (*domaindi
 }
 
 type stubSourceAnalyzer struct {
-	result map[string]*domaindiet.CouplingAnalysis
-	err    error
+	imports map[string][]string
+	result  map[string]*domaindiet.CouplingAnalysis
+	err     error
 }
 
-func (s *stubSourceAnalyzer) AnalyzeCoupling(_ context.Context, _ string, _ map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error) {
+func (s *stubSourceAnalyzer) AnalyzeCoupling(_ context.Context, _ string, imports map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error) {
+	s.imports = imports
 	return s.result, s.err
 }
 
@@ -1114,6 +1117,47 @@ func TestRunKnownScopesWithoutSourceAnalysis(t *testing.T) {
 	for _, entry := range plan.Entries {
 		if entry.Coupling.Unanalyzed || entry.Coupling.IsUnused || entry.Scores.Difficulty == domaindiet.DifficultyUnknown || entry.Scope == "" {
 			t.Fatalf("lost known non-static usage: %+v", entry)
+		}
+	}
+}
+
+type captureHealthSource struct{ purls []string }
+
+func (s *captureHealthSource) AnalyzeFromPURLs(_ context.Context, purls []string) (map[string]*domain.Analysis, error) {
+	s.purls = append([]string(nil), purls...)
+	return map[string]*domain.Analysis{}, nil
+}
+func (s *captureHealthSource) AnalyzeFromGitHubURLs(context.Context, []string) (map[string]*domain.Analysis, error) {
+	return nil, fmt.Errorf("unexpected GitHub URL analysis")
+}
+
+func TestRunFiltersGoIndirectBeforeSourceAndHealth(t *testing.T) {
+	const used = "pkg:golang/example.com/used@v1.0.0"
+	const unused = "pkg:golang/example.com/unused@v1.0.0"
+	const indirect = "pkg:golang/gopkg.in/datadog/dd-trace-go.v1@v1.0.0"
+	source := &stubSourceAnalyzer{result: map[string]*domaindiet.CouplingAnalysis{used: {ImportFileCount: 1}}}
+	health := &captureHealthSource{}
+	svc := NewService(&stubGraphAnalyzer{result: &domaindiet.GraphResult{
+		DirectDeps: []string{used, unused, indirect},
+		Metrics: map[string]*domaindiet.GraphMetrics{
+			unused: {ExclusiveTransitiveCount: 1}, indirect: {ExclusiveTransitiveCount: 1000},
+		},
+	}}, source, nil, application.NewAnalysisService(health))
+	plan, err := svc.Run(context.Background(), DietInput{SourceRoot: t.TempDir(), GoIndirectDeps: map[string]struct{}{
+		"gopkg.in/datadog/dd-trace-go.v1": {},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := source.imports[indirect]; ok || !reflect.DeepEqual(health.purls, []string{used, unused}) {
+		t.Fatalf("indirect reached analysis: source=%v health=%v", source.imports, health.purls)
+	}
+	if len(plan.Entries) != 2 || plan.Summary.UnusedDirect != 1 {
+		t.Fatalf("incorrect direct summary: %+v", plan.Summary)
+	}
+	for _, entry := range plan.Entries {
+		if entry.PURL == unused && entry.Scores.GraphImpact != 1 {
+			t.Fatalf("filtered metrics changed normalization: %+v", entry.Scores)
 		}
 	}
 }
