@@ -62,8 +62,6 @@ func RunDiet(
 	var analysisService *application.AnalysisService
 	if !opts.Offline {
 		analysisService = createAnalysisService(cfg)
-	} else {
-		pypiResolver = nil
 	}
 
 	// Create diet service
