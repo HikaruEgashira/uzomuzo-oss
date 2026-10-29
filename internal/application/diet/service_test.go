@@ -1121,9 +1121,13 @@ func TestRunKnownScopesWithoutSourceAnalysis(t *testing.T) {
 	}
 }
 
-type captureHealthSource struct{ purls []string }
+type captureHealthSource struct {
+	purls []string
+	calls int
+}
 
 func (s *captureHealthSource) AnalyzeFromPURLs(_ context.Context, purls []string) (map[string]*domain.Analysis, error) {
+	s.calls++
 	s.purls = append([]string(nil), purls...)
 	return map[string]*domain.Analysis{}, nil
 }

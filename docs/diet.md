@@ -136,6 +136,8 @@ uzomuzo diet --sbom bom.json --source . --format detailed
 | `--sbom` | Yes | — | Path to CycloneDX SBOM JSON, or `-` for stdin |
 | `--source` | No | `.` | Root directory for source coupling analysis |
 | `--format`, `-f` | No | `table` | Output format: `json`, `table`, `detailed` |
+| `--offline` | No | `false` | Skip all external health, license and wheel lookups |
+| `--private-patterns` | No | `UZOMUZO_PRIVATE_PATTERNS` | Comma-separated private dependency name patterns |
 
 > **⚠️ `--source` must point to the same project root that was used to generate the SBOM.**
 > If it points to the wrong directory, dependencies will appear "unused" even when they are actually used — because the scanner cannot find the import statements.
@@ -447,3 +449,20 @@ All languages use tree-sitter for AST-based analysis. Of a file larger than 1 Mi
 Diet reads every `go.mod` under `--source` before source and health analysis. A module required directly in any of them remains a candidate, even if other modules mark it `// indirect`. Module names are compared case-insensitively against SBOM PURLs. Requirements used only indirectly are omitted from the direct candidate list and external health requests; `go_indirect_filtered` records the count. Existing SBOM graph topology is not rewritten.
 
 Explicit Go tool directives remain tool dependencies, including when their `require` is indirect. Other indirect-only requirements are not direct removal candidates, even if imported by a `tools.go` file. Nested `vendor`, `testdata`, `node_modules` and hidden directories, and symlink entries below the source root, are skipped. A symlink passed as the source root is resolved before walking. An unreadable or malformed manifest fails the command rather than applying a partial exclusion set.
+
+
+### Network access and private dependencies
+
+Use `--offline` to run graph and source analysis without HTTP requests. Health remains `Unknown` with the existing unknown-risk value of 0.5; this is not a clean vulnerability result. Python import names that require wheel metadata remain unresolved.
+
+```bash
+uzomuzo diet --sbom bom.json --source . --offline
+UZOMUZO_PRIVATE_PATTERNS='@acme/*,acme-*' uzomuzo diet --sbom bom.json
+GOPRIVATE='github.com/acme/*' uzomuzo diet --sbom bom.json
+```
+
+Private patterns use Go module-prefix glob syntax against decoded dependency names, case-insensitively. Use normalized PyPI names (lowercase, hyphens instead of underscores or dots). `GOPRIVATE` and `GONOSUMDB` environment patterns apply only to Go modules; `--private-patterns` or `UZOMUZO_PRIVATE_PATTERNS` applies to all ecosystems. Malformed patterns stop analysis before any request. Private dependencies stay in local graph/source analysis and output with lifecycle `Private`, but never reach health or wheel lookups. Local output still contains their names.
+
+Only exported Go environment settings and explicit patterns are used. Settings persisted by `go env -w`, npm registry mappings, and Python index configuration are not automatically read. Use explicit patterns or `--offline` for private packages in those environments. Registry URLs alone do not establish which index supplied a dependency.
+
+Online runs send dependency identifiers to external services. Depending on ecosystem and enabled analysis, default destinations include `api.deps.dev`, `api.github.com`, `raw.githubusercontent.com`, `api.osv.dev`, `api.clearlydefined.io`, `registry.npmjs.org`, `rubygems.org`, `pypi.org`, Python wheel download hosts such as `files.pythonhosted.org`, `proxy.golang.org`, `repo1.maven.org`, `search.maven.org`, `crates.io`, `api.nuget.org`, and `packagist.org`. Maintainer-domain analysis can also use `data.iana.org` and registry RDAP hosts discovered through its bootstrap data. Configured endpoints and redirects can change destination hosts. For a guarantee that no dependency identifiers leave the process, use `--offline`.

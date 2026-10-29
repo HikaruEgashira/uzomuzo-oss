@@ -6,15 +6,19 @@ import (
 	"io"
 	"os"
 
+	"github.com/future-architect/uzomuzo-oss/internal/application"
 	dietapp "github.com/future-architect/uzomuzo-oss/internal/application/diet"
 	domaincfg "github.com/future-architect/uzomuzo-oss/internal/domain/config"
 )
 
 // DietOptions contains all diet-specific options parsed from CLI flags.
 type DietOptions struct {
-	SBOMPath   string // --sbom flag (required)
-	SourceRoot string // --source flag (optional; empty = skip source analysis, CLI defaults to ".")
-	Format     string // --format flag (json, table, detailed)
+	SBOMPath          string // --sbom flag (required)
+	SourceRoot        string // --source flag (optional; empty = skip source analysis, CLI defaults to ".")
+	Format            string // --format flag (json, table, detailed)
+	Offline           bool
+	PrivatePatterns   string
+	GoPrivatePatterns string
 	// ToolDeps is a set of module paths declared in go.mod tool directives
 	// (Go 1.24+). Populated by the composition root when a Go source root
 	// is provided. Tool deps are excluded from unused-dependency detection.
@@ -55,18 +59,26 @@ func RunDiet(
 	}
 
 	// Create analysis service for health signals
-	analysisService := createAnalysisService(cfg)
+	var analysisService *application.AnalysisService
+	if !opts.Offline {
+		analysisService = createAnalysisService(cfg)
+	} else {
+		pypiResolver = nil
+	}
 
 	// Create diet service
 	svc := dietapp.NewService(graphAnalyzer, sourceAnalyzer, pypiResolver, analysisService)
 
 	// Run diet pipeline
 	plan, err := svc.Run(ctx, dietapp.DietInput{
-		SBOMData:       sbomData,
-		SBOMPath:       opts.SBOMPath,
-		SourceRoot:     opts.SourceRoot,
-		ToolDeps:       opts.ToolDeps,
-		GoIndirectDeps: opts.GoIndirectDeps,
+		SBOMData:          sbomData,
+		SBOMPath:          opts.SBOMPath,
+		SourceRoot:        opts.SourceRoot,
+		ToolDeps:          opts.ToolDeps,
+		GoIndirectDeps:    opts.GoIndirectDeps,
+		Offline:           opts.Offline,
+		PrivatePatterns:   opts.PrivatePatterns,
+		GoPrivatePatterns: opts.GoPrivatePatterns,
 	})
 	if err != nil {
 		return fmt.Errorf("diet analysis failed: %w", err)

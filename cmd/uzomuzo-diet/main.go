@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	urfcli "github.com/urfave/cli/v3"
 
@@ -46,6 +47,8 @@ func main() {
 		Usage:   "[experimental] Analyze dependency removability and produce a prioritized diet plan",
 		Version: version,
 		Flags: []urfcli.Flag{
+			&urfcli.BoolFlag{Name: "offline", Usage: "Skip all external health, license and wheel requests"},
+			&urfcli.StringFlag{Name: "private-patterns", Usage: "Comma-separated private dependency name patterns (Go module-prefix glob syntax)", Sources: urfcli.EnvVars("UZOMUZO_PRIVATE_PATTERNS")},
 			&urfcli.StringFlag{
 				Name:     "sbom",
 				Usage:    "Path to CycloneDX SBOM JSON, or '-' for stdin (required)",
@@ -69,11 +72,14 @@ func main() {
 				return fmt.Errorf("read source dependency metadata: %w", err)
 			}
 			opts := cli.DietOptions{
-				SBOMPath:       cmd.String("sbom"),
-				SourceRoot:     sourceRoot,
-				Format:         cmd.String("format"),
-				ToolDeps:       tools,
-				GoIndirectDeps: indirect,
+				SBOMPath:          cmd.String("sbom"),
+				SourceRoot:        sourceRoot,
+				Format:            cmd.String("format"),
+				ToolDeps:          tools,
+				GoIndirectDeps:    indirect,
+				Offline:           cmd.Bool("offline"),
+				PrivatePatterns:   cmd.String("private-patterns"),
+				GoPrivatePatterns: strings.Join([]string{os.Getenv("GOPRIVATE"), os.Getenv("GONOSUMDB")}, ","),
 			}
 
 			graphAnalyzer := depgraph.NewAnalyzer()
