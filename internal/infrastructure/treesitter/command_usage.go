@@ -70,12 +70,10 @@ func (a *Analyzer) AnalyzePyPICommandUsage(
 			}
 			return nil
 		}
-		for _, line := range commandLines(relPath, data) {
-			for _, words := range splitShellCommands(line) {
-				if script := commandScript(words); script != "" {
-					for _, purl := range owners[script] {
-						used[purl] = struct{}{}
-					}
+		for _, words := range commandWords(relPath, data) {
+			if script := commandScript(words); script != "" {
+				for _, purl := range owners[script] {
+					used[purl] = struct{}{}
 				}
 			}
 		}
@@ -100,37 +98,55 @@ func isCommandEvidenceFile(relPath string) bool {
 		(strings.HasSuffix(parts[2], ".yml") || strings.HasSuffix(parts[2], ".yaml"))
 }
 
+func commandWords(relPath string, data []byte) [][]string {
+	if strings.HasPrefix(filepath.Base(relPath), "Dockerfile") {
+		return dockerCommandWords(data)
+	}
+	var commands [][]string
+	for _, line := range commandLines(relPath, data) {
+		commands = append(commands, splitShellCommands(line)...)
+	}
+	return commands
+}
+
+func dockerCommandWords(data []byte) [][]string {
+	var commands [][]string
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		instruction := fields[0]
+		if !strings.EqualFold(instruction, "RUN") && !strings.EqualFold(instruction, "CMD") && !strings.EqualFold(instruction, "ENTRYPOINT") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, instruction))
+		if strings.HasPrefix(rest, "[") {
+			var args []string
+			if json.Unmarshal([]byte(rest), &args) == nil && len(args) > 0 {
+				if dockerShellCommand(args) {
+					commands = append(commands, splitShellCommands(args[2])...)
+				} else {
+					commands = append(commands, args)
+				}
+			}
+			continue
+		}
+		commands = append(commands, splitShellCommands(rest)...)
+	}
+	return commands
+}
+
+func dockerShellCommand(args []string) bool {
+	return len(args) >= 3 &&
+		(filepath.Base(args[0]) == "sh" || filepath.Base(args[0]) == "bash") && args[1] == "-c"
+}
+
 func commandLines(relPath string, data []byte) []string {
 	base := filepath.Base(relPath)
 	var lines []string
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	if strings.HasPrefix(base, "Dockerfile") {
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
-				continue
-			}
-			instruction := fields[0]
-			if !strings.EqualFold(instruction, "RUN") && !strings.EqualFold(instruction, "CMD") && !strings.EqualFold(instruction, "ENTRYPOINT") {
-				continue
-			}
-			rest := strings.TrimSpace(strings.TrimPrefix(line, instruction))
-			if strings.HasPrefix(rest, "[") {
-				var args []string
-				if json.Unmarshal([]byte(rest), &args) == nil && len(args) > 0 {
-					if len(args) >= 3 && (args[0] == "sh" || args[0] == "bash") && args[1] == "-c" {
-						lines = append(lines, args[2])
-					} else {
-						lines = append(lines, strings.Join(args, " "))
-					}
-				}
-				continue
-			}
-			lines = append(lines, rest)
-		}
-		return lines
-	}
 	if base == "Procfile" {
 		for _, line := range stripHeredocBodies(strings.Split(string(data), "\n")) {
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {

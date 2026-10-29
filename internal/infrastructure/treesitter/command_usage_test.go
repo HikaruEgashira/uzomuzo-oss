@@ -69,6 +69,26 @@ func TestAnalyzePyPICommandUsage(t *testing.T) {
 	}
 }
 
+func TestAnalyzePyPICommandUsage_DockerExecArgsRemainArguments(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Dockerfile")
+	if err := os.WriteFile(path, []byte("CMD [\"echo\", \"safe; pytest\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewAnalyzer().AnalyzePyPICommandUsage(
+		context.Background(), root,
+		map[string][]string{"pkg:pypi/pytest@1": {"pytest"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := got["pkg:pypi/pytest@1"]; found {
+		t.Fatalf("command usage = %v; Docker exec-form arguments must not be re-parsed as shell syntax", got)
+	}
+}
+
 func FuzzSplitShellCommands(f *testing.F) {
 	f.Add("uv run uvicorn app:app # server")
 	f.Add("echo 'a;b' && python -m uvicorn")
