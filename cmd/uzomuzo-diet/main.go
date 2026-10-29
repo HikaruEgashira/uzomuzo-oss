@@ -3,9 +3,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 
 	urfcli "github.com/urfave/cli/v3"
 
@@ -64,11 +64,16 @@ func main() {
 		},
 		Action: func(ctx context.Context, cmd *urfcli.Command) error {
 			sourceRoot := cmd.String("source")
+			tools, indirect, err := gomod.ReadDependencyScopes(ctx, sourceRoot)
+			if err != nil {
+				return fmt.Errorf("read source dependency metadata: %w", err)
+			}
 			opts := cli.DietOptions{
-				SBOMPath:   cmd.String("sbom"),
-				SourceRoot: sourceRoot,
-				Format:     cmd.String("format"),
-				ToolDeps:   detectToolDeps(sourceRoot),
+				SBOMPath:       cmd.String("sbom"),
+				SourceRoot:     sourceRoot,
+				Format:         cmd.String("format"),
+				ToolDeps:       tools,
+				GoIndirectDeps: indirect,
 			}
 
 			graphAnalyzer := depgraph.NewAnalyzer()
@@ -84,28 +89,4 @@ func main() {
 		slog.Error("command failed", "error", err)
 		os.Exit(1)
 	}
-}
-
-// detectToolDeps reads go.mod from the source root (if present) and returns
-// the set of module paths declared in tool directives (Go 1.24+).
-// Returns nil if the source root has no go.mod or if parsing fails.
-func detectToolDeps(sourceRoot string) map[string]struct{} {
-	if sourceRoot == "" {
-		return nil
-	}
-	goModPath := filepath.Join(sourceRoot, "go.mod")
-	data, err := os.ReadFile(goModPath)
-	if err != nil {
-		// No go.mod or unreadable — not a Go project; skip.
-		return nil
-	}
-	toolPaths, err := gomod.ParseToolPaths(data)
-	if err != nil {
-		slog.Debug("failed to parse go.mod for tool directives", "error", err)
-		return nil
-	}
-	if len(toolPaths) > 0 {
-		slog.Debug("detected go.mod tool directives", "count", len(toolPaths))
-	}
-	return toolPaths
 }

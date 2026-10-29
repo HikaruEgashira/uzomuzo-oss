@@ -19,6 +19,8 @@ type DietOptions struct {
 	// (Go 1.24+). Populated by the composition root when a Go source root
 	// is provided. Tool deps are excluded from unused-dependency detection.
 	ToolDeps map[string]struct{}
+	// GoIndirectDeps contains normalized module names required only indirectly.
+	GoIndirectDeps map[string]struct{}
 }
 
 // RunDiet is the entry point for the "diet" subcommand.
@@ -60,10 +62,11 @@ func RunDiet(
 
 	// Run diet pipeline
 	plan, err := svc.Run(ctx, dietapp.DietInput{
-		SBOMData:   sbomData,
-		SBOMPath:   opts.SBOMPath,
-		SourceRoot: opts.SourceRoot,
-		ToolDeps:   opts.ToolDeps,
+		SBOMData:       sbomData,
+		SBOMPath:       opts.SBOMPath,
+		SourceRoot:     opts.SourceRoot,
+		ToolDeps:       opts.ToolDeps,
+		GoIndirectDeps: opts.GoIndirectDeps,
 	})
 	if err != nil {
 		return fmt.Errorf("diet analysis failed: %w", err)

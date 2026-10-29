@@ -401,7 +401,7 @@ All languages use tree-sitter for AST-based analysis. Of a file larger than 1 Mi
 | Blank imports | `import _ "pkg"` — detected, marked as side-effect (no call site tracking) |
 | Dot imports | `import . "pkg"` — detected, marked as uncountable (symbols callable without prefix) |
 | Call sites | Selector expressions (`pkg.Func`), qualified types (`pkg.Type`) |
-| Ecosystem features | Go tool directives (`go.mod tool`, Go 1.24+) excluded from unused detection |
+| Ecosystem features | Go tool directives (`go.mod tool`, Go 1.24+) retained as tools; indirect-only Go requirements excluded from direct removal candidates |
 | Import path handling | Strips major version suffixes (`/v2`), `gopkg.in` version suffixes (`.v3`), hyphenated package aliases (`go-loser` -> `loser`, `geoip2-golang` -> `geoip2`) |
 | Limitations | Dot-imported symbols cannot be attributed to a specific dependency. Calls are missed when the package name differs from the last path element (`v4`, `v1`, `jsoniter`; [#551](https://github.com/future-architect/uzomuzo-oss/issues/551)). Methods called on returned values are not counted. |
 
@@ -440,3 +440,9 @@ All languages use tree-sitter for AST-based analysis. Of a file larger than 1 Mi
 | Call sites | Method invocations, constructors (incl. generics `new Foo<T>()`), annotations, inheritance (`extends`/`implements`), type declarations, `instanceof`/casts, method references (`Foo::bar`), field access |
 | Ecosystem features | **Maven package overrides** (~40 entries): maps groupId/artifactId to actual Java packages where they differ (Guava, Jackson, commons-*, Spring Boot starters). **Runtime whitelist**: JDBC drivers, logging backends, WebJars marked as `ScopeRuntime`. **Spring Boot starter heuristics**: derives package prefix from starter suffix. |
 | Limitations | Reflection (`Class.forName(var)`), ServiceLoader, and Spring Boot autoconfiguration are [fundamentally undetectable](#java-runtime-loaded-dependency-detection) by static analysis. CycloneDX `scope` field not yet used (#303). See [ADR-0015](adr/0015-java-reflection-detection-strategy.md). Coordinates whose package is neither under the groupId nor in the override list match nothing, and artifacts sharing a package prefix can be credited with each other's use ([#547](https://github.com/future-architect/uzomuzo-oss/issues/547)). Instance calls are counted only through the class name or its lowerCamelCase form (`Gson` / `gson`), so `log.info(...)` or `mapper.readValue(...)` is missed. Kotlin is not read. |
+
+### Go modules
+
+Diet reads every `go.mod` under `--source` before source and health analysis. A module required directly in any of them remains a candidate, even if other modules mark it `// indirect`. Module names are compared case-insensitively against SBOM PURLs. Requirements used only indirectly are omitted from the direct candidate list and external health requests; `go_indirect_filtered` records the count. Existing SBOM graph topology is not rewritten.
+
+Explicit Go tool directives remain tool dependencies, including when their `require` is indirect. Other indirect-only requirements are not direct removal candidates, even if imported by a `tools.go` file. Nested `vendor`, `testdata`, `node_modules` and hidden directories, and symlink entries below the source root, are skipped. A symlink passed as the source root is resolved before walking. An unreadable or malformed manifest fails the command rather than applying a partial exclusion set.
