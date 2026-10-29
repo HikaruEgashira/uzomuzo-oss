@@ -34,6 +34,7 @@ type GraphResult struct {
 	DirectDeps      []string
 	AllDeps         []string
 	Metrics         map[string]*GraphMetrics
+	DisplayNames    map[string]string // normalized PURL to original SBOM name
 	TotalTransitive int
 }
 
