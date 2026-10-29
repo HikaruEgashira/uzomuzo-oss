@@ -56,6 +56,7 @@ func FuzzAnalyzeJavaScriptRequire(f *testing.F) {
 func FuzzAnalyzeRubyRequire(f *testing.F) {
 	seeds := []string{
 		`require "mysql2"`,
+		`require "foo#{suffix}"`,
 		`require "omniauth/google/oauth2"`,
 		`Bundler.require(*Rails.groups)`,
 		`FactoryBot.create(:user)`,
@@ -73,10 +74,28 @@ func FuzzAnalyzeRubyRequire(f *testing.F) {
 	analyzer := NewAnalyzer()
 	f.Cleanup(analyzer.Close)
 	importPaths := map[string][]string{
-		"pkg:gem/mysql2@0.5.6":                 {"mysql2"},
-		"pkg:gem/factory_bot_rails@6.4.2":      {"factory_bot_rails", "factorybotrails", "factorybot"},
-		"pkg:gem/omniauth-google-oauth2@1.8.0": {"omniauth-google-oauth2", "omniauthgoogleoauth2", "omniauth/google/oauth2"},
-		"pkg:gem/config@5.5.0":                 {"config"},
+		"pkg:gem/mysql2@0.5.6": {
+			rubyRequireKeyPrefix + "mysql2",
+			rubyConstantKeyPrefix + "mysql2",
+		},
+		"pkg:gem/factory_bot_rails@6.4.2": {
+			rubyRequireKeyPrefix + "factory_bot_rails",
+			rubyConstantKeyPrefix + "factorybotrails",
+			rubyConstantKeyPrefix + "factorybot",
+		},
+		"pkg:gem/omniauth-google-oauth2@1.8.0": {
+			rubyRequireKeyPrefix + "omniauth-google-oauth2",
+			rubyRequireKeyPrefix + "omniauth/google/oauth2",
+			rubyConstantKeyPrefix + "omniauthgoogleoauth2",
+		},
+		"pkg:gem/config@5.5.0": {
+			rubyRequireKeyPrefix + "config",
+			rubyConstantKeyPrefix + "config",
+		},
+		"pkg:gem/foo@1.0.0": {
+			rubyRequireKeyPrefix + "foo",
+			rubyConstantKeyPrefix + "foo",
+		},
 	}
 
 	f.Fuzz(func(t *testing.T, src string) {

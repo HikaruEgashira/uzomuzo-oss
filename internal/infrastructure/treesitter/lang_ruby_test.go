@@ -21,7 +21,7 @@ func TestAnalyzer_RubyGemCoupling(t *testing.T) {
 			name:   "require is a side-effect import",
 			source: `require "mysql2"`,
 			imports: map[string][]string{
-				"pkg:gem/mysql2@0.5.6": {"mysql2"},
+				"pkg:gem/mysql2@0.5.6": {rubyRequireKeyPrefix + "mysql2", rubyConstantKeyPrefix + "mysql2"},
 			},
 			want: map[string]int{"pkg:gem/mysql2@0.5.6": 1},
 		},
@@ -32,7 +32,11 @@ FactoryBot.create(:user)
 FactoryBot::SyntaxRunner
 `,
 			imports: map[string][]string{
-				"pkg:gem/factory_bot_rails@6.4.2": {"factory_bot_rails", "factorybotrails", "factorybot"},
+				"pkg:gem/factory_bot_rails@6.4.2": {
+					rubyRequireKeyPrefix + "factory_bot_rails",
+					rubyConstantKeyPrefix + "factorybotrails",
+					rubyConstantKeyPrefix + "factorybot",
+				},
 			},
 			want: map[string]int{"pkg:gem/factory_bot_rails@6.4.2": 2},
 		},
@@ -40,8 +44,15 @@ FactoryBot::SyntaxRunner
 			name:   "scope resolution ignores the name-side constant",
 			source: `FactoryBot::SyntaxRunner`,
 			imports: map[string][]string{
-				"pkg:gem/factory_bot_rails@6.4.2": {"factory_bot_rails", "factorybotrails", "factorybot"},
-				"pkg:gem/syntax_runner@1.0.0":     {"syntax_runner", "syntaxrunner"},
+				"pkg:gem/factory_bot_rails@6.4.2": {
+					rubyRequireKeyPrefix + "factory_bot_rails",
+					rubyConstantKeyPrefix + "factorybotrails",
+					rubyConstantKeyPrefix + "factorybot",
+				},
+				"pkg:gem/syntax_runner@1.0.0": {
+					rubyRequireKeyPrefix + "syntax_runner",
+					rubyConstantKeyPrefix + "syntaxrunner",
+				},
 			},
 			want:   map[string]int{"pkg:gem/factory_bot_rails@6.4.2": 1},
 			absent: []string{"pkg:gem/syntax_runner@1.0.0"},
@@ -60,10 +71,22 @@ module Example
 end
 `,
 			imports: map[string][]string{
-				"pkg:gem/config@5.5.0":  {"config"},
-				"pkg:gem/foo@1.0.0":     {"foo"},
-				"pkg:gem/bar@1.0.0":     {"bar"},
-				"pkg:gem/example@1.0.0": {"example"},
+				"pkg:gem/config@5.5.0": {
+					rubyRequireKeyPrefix + "config",
+					rubyConstantKeyPrefix + "config",
+				},
+				"pkg:gem/foo@1.0.0": {
+					rubyRequireKeyPrefix + "foo",
+					rubyConstantKeyPrefix + "foo",
+				},
+				"pkg:gem/bar@1.0.0": {
+					rubyRequireKeyPrefix + "bar",
+					rubyConstantKeyPrefix + "bar",
+				},
+				"pkg:gem/example@1.0.0": {
+					rubyRequireKeyPrefix + "example",
+					rubyConstantKeyPrefix + "example",
+				},
 			},
 			absent: []string{"pkg:gem/config@5.5.0", "pkg:gem/foo@1.0.0", "pkg:gem/bar@1.0.0", "pkg:gem/example@1.0.0"},
 		},
@@ -119,7 +142,11 @@ func TestAnalyzer_RubyFileDiscovery(t *testing.T) {
 	analyzer := NewAnalyzer()
 	t.Cleanup(analyzer.Close)
 	got, err := analyzer.AnalyzeCoupling(context.Background(), dir, map[string][]string{
-		"pkg:gem/factory_bot_rails@6.4.2": {"factory_bot_rails", "factorybotrails", "factorybot"},
+		"pkg:gem/factory_bot_rails@6.4.2": {
+			rubyRequireKeyPrefix + "factory_bot_rails",
+			rubyConstantKeyPrefix + "factorybotrails",
+			rubyConstantKeyPrefix + "factorybot",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

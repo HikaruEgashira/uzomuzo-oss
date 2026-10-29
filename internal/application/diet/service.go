@@ -19,7 +19,7 @@ import (
 // SourceAnalyzer abstracts static analysis of source code against dependencies.
 type SourceAnalyzer interface {
 	// AnalyzeCoupling scans the source tree and returns coupling data per PURL.
-	// importPaths maps PURL -> []string of import paths for that ecosystem.
+	// importPaths maps PURL to candidate paths; Ruby keys use require: or const: prefixes.
 	AnalyzeCoupling(ctx context.Context, sourceRoot string, importPaths map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error)
 }
 

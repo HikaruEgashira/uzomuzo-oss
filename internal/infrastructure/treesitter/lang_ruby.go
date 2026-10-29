@@ -10,6 +10,11 @@ import (
 	tree_sitter_ruby "github.com/tree-sitter/tree-sitter-ruby/bindings/go"
 )
 
+const (
+	rubyRequireKeyPrefix  = "require:"
+	rubyConstantKeyPrefix = "const:"
+)
+
 func registerRubyConfig(a *Analyzer) {
 	a.configs[langRuby] = &langConfig{
 		language: loadLanguage(tree_sitter_ruby.Language()),
@@ -33,7 +38,10 @@ func (a *Analyzer) handleRubyImport(
 	aliasMap map[string][]string,
 ) {
 	if node.Kind() == "string_content" {
-		purls := rubyImportPURLs(strings.ToLower(importPath), importToPURL, true)
+		if !isStaticRubyStringContent(node) {
+			return
+		}
+		purls := rubyImportPURLs(strings.ToLower(importPath), importToPURL, rubyRequireKeyPrefix, true)
 		if len(purls) > 0 {
 			key := blankImportAlias + importPath
 			aliasMap[key] = appendUniquePURLs(aliasMap[key], purls)
@@ -46,15 +54,19 @@ func (a *Analyzer) handleRubyImport(
 
 	constant := node.Utf8Text(src)
 	key := normalizeRubyConstant(constant)
-	purls := rubyImportPURLs(key, importToPURL, false)
+	purls := rubyImportPURLs(key, importToPURL, rubyConstantKeyPrefix, false)
 	if len(purls) > 0 {
 		aliasMap[constant] = appendUniquePURLs(aliasMap[constant], purls)
 	}
 }
 
-func rubyImportPURLs(key string, importToPURL map[string][]string, prefix bool) []string {
+func rubyImportPURLs(key string, importToPURL map[string][]string, kindPrefix string, prefix bool) []string {
 	var matched []string
-	for importPath, purls := range importToPURL {
+	for importKey, purls := range importToPURL {
+		importPath, ok := strings.CutPrefix(importKey, kindPrefix)
+		if !ok {
+			continue
+		}
 		if importPath != key && (!prefix || !strings.HasPrefix(key, importPath+"/")) {
 			continue
 		}
@@ -66,6 +78,14 @@ func rubyImportPURLs(key string, importToPURL map[string][]string, prefix bool) 
 		}
 	}
 	return matched
+}
+
+func isStaticRubyStringContent(node *sitter.Node) bool {
+	stringNode := node.Parent()
+	if stringNode == nil || stringNode.Kind() != "string" || stringNode.NamedChildCount() != 1 {
+		return false
+	}
+	return sameRubyNode(node, stringNode.NamedChild(0))
 }
 
 func normalizeRubyConstant(name string) string {

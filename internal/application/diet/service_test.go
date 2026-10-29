@@ -130,34 +130,44 @@ func TestBuildRubyImportPaths(t *testing.T) {
 	tests := []struct {
 		name string
 		purl string
+		gem  string
 		want []string
 	}{
 		{
 			name: "factory_bot_rails maps its require and constants",
 			purl: "pkg:gem/factory_bot_rails@6.4.2",
-			want: []string{"factory_bot_rails", "factorybotrails", "factorybot"},
+			gem:  "factory_bot_rails",
+			want: []string{"require:factory_bot_rails", "const:factorybotrails", "const:factorybot"},
 		},
 		{
 			name: "omniauth strategy maps nested require path",
 			purl: "pkg:gem/omniauth-google-oauth2@1.8.0",
-			want: []string{"omniauth-google-oauth2", "omniauthgoogleoauth2", "omniauth/google/oauth2"},
+			gem:  "omniauth-google-oauth2",
+			want: []string{"require:omniauth-google-oauth2", "require:omniauth/google/oauth2", "const:omniauthgoogleoauth2"},
 		},
 		{
 			name: "simple gem keeps its name",
 			purl: "pkg:gem/mysql2@0.5.6",
-			want: []string{"mysql2"},
+			gem:  "mysql2",
+			want: []string{"require:mysql2", "const:mysql2"},
 		},
 		{
 			name: "rails suffix also maps the base constant",
 			purl: "pkg:gem/sprockets-rails@3.5.2",
-			want: []string{"sprockets-rails", "sprocketsrails", "sprockets"},
+			gem:  "sprockets-rails",
+			want: []string{"require:sprockets-rails", "const:sprocketsrails", "const:sprockets"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildImportPaths([]string{tt.purl})[tt.purl]
+			got := buildRubyImportPaths(tt.gem)
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("buildImportPaths(%s) = %v, want %v", tt.purl, got, tt.want)
+				t.Errorf("buildRubyImportPaths(%s) = %v, want %v", tt.gem, got, tt.want)
+			}
+
+			gotMapKeys := buildImportPaths([]string{tt.purl})[tt.purl]
+			if !reflect.DeepEqual(gotMapKeys, tt.want) {
+				t.Errorf("buildImportPaths(%s) = %v, want %v", tt.purl, gotMapKeys, tt.want)
 			}
 		})
 	}

@@ -38,7 +38,7 @@ Known causes of a used dependency being reported as unused or trivial:
 
 When you use the [Claude Code skills](../claude-skills/), verify `unused` and `trivial` the same way; the skills are being updated to require it (#542).
 
-Ruby gem names are mapped to `require` strings and constants heuristically. Unknown gem-to-constant mappings and dynamically computed `require` paths can be missed, and Gemfile groups are not reported as separate scopes. Verify Ruby `unused` results before removing a gem.
+Ruby gem names are mapped to static `require` strings and constants heuristically. Interpolated or dynamically computed `require` paths are ignored, unknown gem-to-constant mappings can be missed, and Gemfile groups are not reported as separate scopes. Verify Ruby `unused` results before removing a gem.
 
 ## Architecture
 
@@ -451,7 +451,7 @@ All languages use tree-sitter for AST-based analysis. Of a file larger than 1 Mi
 | Capability | Details |
 |-----------|---------|
 | Files | `.rb`, `.rake`, `.gemspec`, `.ru`, `Gemfile`, and `Rakefile` |
-| Side-effect requires | `require "gem"` is marked as used without counting a callable alias |
+| Side-effect requires | Static `require "gem"` paths are matched separately from constant names and are marked as used without counting a callable alias; interpolated strings are ignored |
 | Constant references | Common gem-name/constant pairs (including `factory_bot_rails` and `omniauth-google-oauth2`) are matched when gems are loaded through `Bundler.require` |
 | Runtime gems | Common Rails frameworks, database adapters, app servers, and selected development tools are marked `ScopeRuntime` |
 | Limitations | Dynamic `require` targets and Gemfile group scopes are not resolved. Gem names with unconventional constant names need an explicit mapping. Methods on returned objects are not counted. |

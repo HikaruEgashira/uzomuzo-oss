@@ -10,6 +10,11 @@ import (
 	"github.com/package-url/packageurl-go"
 )
 
+const (
+	rubyRequireKeyPrefix  = "require:"
+	rubyConstantKeyPrefix = "const:"
+)
+
 // isWorkspaceDep returns true if the PURL represents a local workspace package
 // (npm/yarn/pnpm monorepo internal) that should be excluded from diet analysis.
 func isWorkspaceDep(purlStr string) bool {
@@ -89,33 +94,39 @@ func buildImportPaths(purls []string) map[string][]string {
 	return result
 }
 
+// buildRubyImportPaths keeps require paths distinct from constant names.
 func buildRubyImportPaths(name string) []string {
 	lower := strings.ToLower(name)
 	seen := make(map[string]struct{})
 	paths := make([]string, 0, 4)
-	add := func(path string) {
+	add := func(kindPrefix, path string) {
 		if path == "" {
 			return
 		}
-		if _, ok := seen[path]; ok {
+		key := kindPrefix + path
+		if _, ok := seen[key]; ok {
 			return
 		}
-		seen[path] = struct{}{}
-		paths = append(paths, path)
+		seen[key] = struct{}{}
+		paths = append(paths, key)
 	}
 
-	add(lower)
-	add(strings.NewReplacer("_", "", "-", "").Replace(lower))
+	add(rubyRequireKeyPrefix, lower)
+	if lower == "omniauth-google-oauth2" {
+		add(rubyRequireKeyPrefix, "omniauth/google/oauth2")
+	}
+	add(rubyConstantKeyPrefix, normalizeRubyConstantName(lower))
 	if base, ok := strings.CutSuffix(lower, "_rails"); ok {
-		add(strings.ReplaceAll(base, "_", ""))
+		add(rubyConstantKeyPrefix, normalizeRubyConstantName(base))
 	}
 	if base, ok := strings.CutSuffix(lower, "-rails"); ok {
-		add(strings.NewReplacer("_", "", "-", "").Replace(base))
-	}
-	if lower == "omniauth-google-oauth2" {
-		add("omniauth/google/oauth2")
+		add(rubyConstantKeyPrefix, normalizeRubyConstantName(base))
 	}
 	return paths
+}
+
+func normalizeRubyConstantName(name string) string {
+	return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(name))
 }
 
 // pypiPrefixes lists common PyPI distribution name prefixes that are not part
