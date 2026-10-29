@@ -42,9 +42,12 @@ type PyPIImportResolver interface {
 
 // DietInput contains the inputs for a diet analysis run.
 type DietInput struct {
-	SBOMData   []byte
-	SBOMPath   string
-	SourceRoot string // empty = skip source analysis
+	SBOMData          []byte
+	SBOMPath          string
+	SourceRoot        string // empty = skip source analysis
+	Offline           bool
+	PrivatePatterns   string
+	GoPrivatePatterns string
 	// ToolDeps is a set of module paths declared in go.mod tool directives
 	// (Go 1.24+). These are dev/CI executables that intentionally have zero
 	// source imports and should not be flagged as unused.
@@ -78,6 +81,14 @@ func NewService(
 
 // Run executes the full 4-phase diet pipeline.
 func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPlan, error) {
+	patterns, err := validatePrivatePatterns(input.PrivatePatterns)
+	if err != nil {
+		return nil, err
+	}
+	goPatterns, err := validatePrivatePatterns(input.GoPrivatePatterns)
+	if err != nil {
+		return nil, err
+	}
 	// Phase 1: Graph analysis
 	slog.Info("Phase 1: Analyzing dependency graph from SBOM")
 	graphResult, err := s.graphAnalyzer.AnalyzeGraph(ctx, input.SBOMData)
@@ -100,6 +111,15 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 		kept = append(kept, purl)
 	}
 	graphResult.DirectDeps = kept
+	private := make(map[string]bool)
+	public := make([]string, 0, len(graphResult.DirectDeps))
+	for _, purl := range graphResult.DirectDeps {
+		name, ecosystem, _ := parsePURLParts(purl)
+		private[purl] = matchesPrivate(patterns, name) || (ecosystem == "golang" && matchesPrivate(goPatterns, name))
+		if !private[purl] {
+			public = append(public, purl)
+		}
+	}
 
 	slog.Info("Phase 1 complete",
 		"direct", len(graphResult.DirectDeps),
@@ -135,8 +155,8 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 			// Gate on couplingErr (not couplingResults) because AnalyzeCoupling
 			// returns (nil, nil) when no imports matched — that nil map is exactly
 			// the scenario the wheel fallback should recover from.
-			if s.pypiResolver != nil && couplingErr == nil {
-				retryPaths := s.resolveUnmatchedPyPI(ctx, graphResult.DirectDeps, couplingResults)
+			if !input.Offline && s.pypiResolver != nil && couplingErr == nil {
+				retryPaths := s.resolveUnmatchedPyPI(ctx, public, couplingResults)
 				if len(retryPaths) > 0 {
 					slog.Info("Phase 2.5: Retrying coupling with wheel-resolved import names", "count", len(retryPaths))
 
@@ -187,11 +207,15 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 	go func() {
 		defer wg.Done()
 		// Phase 3: Health signals
-		slog.Info("Phase 3: Fetching health signals", "count", len(graphResult.DirectDeps))
+		if input.Offline {
+			slog.Info("Phase 3: Skipped (offline)")
+			return
+		}
+		slog.Info("Phase 3: Fetching health signals", "count", len(public))
 		healthResults = make(map[string]*domain.Analysis)
-		if s.analysisService != nil && len(graphResult.DirectDeps) > 0 {
+		if s.analysisService != nil && len(public) > 0 {
 			var healthErr error
-			healthResults, healthErr = s.analysisService.ProcessBatchPURLs(ctx, graphResult.DirectDeps)
+			healthResults, healthErr = s.analysisService.ProcessBatchPURLs(ctx, public)
 			if healthErr != nil {
 				slog.Warn("Health signal fetch failed, continuing without health data", "error", healthErr)
 				healthResults = make(map[string]*domain.Analysis)
@@ -215,6 +239,13 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 	slog.Info("Phase 4: Computing scores and ranking")
 	maxExclusive := graphResult.MaxExclusiveTransitiveCount()
 	entries := s.buildEntries(graphResult, couplingResults, healthResults, maxExclusive, input.ToolDeps)
+	for i := range entries {
+		if private[entries[i].PURL] {
+			entries[i].Health.MaintenanceStatus = "Private"
+		} else if input.Offline {
+			entries[i].Health.MaintenanceStatus = "Unknown"
+		}
+	}
 	domaindiet.RankEntries(entries)
 	summary := domaindiet.ComputeSummary(entries, graphResult.TotalTransitive)
 

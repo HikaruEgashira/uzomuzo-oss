@@ -63,3 +63,8 @@ We ask reporters to refrain from public disclosure until a fix is available, and
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+
+## Diet dependency privacy
+
+Online diet analysis sends dependency identifiers to public metadata services. Use `--offline` for a run with no HTTP requests, or configure private-name patterns to exclude private dependencies from health and Python wheel requests. Private names remain in local output. See [diet network access and private dependencies](docs/diet.md#network-access-and-private-dependencies) for supported settings, limitations, and outbound destinations.
