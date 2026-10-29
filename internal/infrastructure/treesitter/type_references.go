@@ -93,6 +93,7 @@ func configTypeNames(parser *sitter.Parser, data []byte) []string {
 }
 
 func typeDeclarationImport(value string) string {
+	// shortcut: bare Node built-ins are not mapped; add their registry when prefix-free attribution is required.
 	if strings.HasPrefix(value, "node:") {
 		return "@types/node"
 	}
