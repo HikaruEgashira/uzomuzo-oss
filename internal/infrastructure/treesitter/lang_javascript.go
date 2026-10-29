@@ -592,7 +592,7 @@ func extractPropertyAssignBinding(callExpr *sitter.Node, src []byte) string {
 }
 
 // isTypeOnlyImport checks if a node's parent import_statement is a TypeScript
-// `import type` (no runtime coupling).
+// `import type` or all-type specifiers (no runtime coupling).
 func isTypeOnlyImport(node *sitter.Node) bool {
 	parent := node.Parent()
 	if parent == nil || parent.Kind() != "import_statement" {
@@ -601,6 +601,11 @@ func isTypeOnlyImport(node *sitter.Node) bool {
 	for i := uint(0); i < parent.ChildCount(); i++ {
 		if parent.Child(i).Kind() == "type" {
 			return true
+		}
+	}
+	for i := uint(0); i < parent.NamedChildCount(); i++ {
+		if clause := parent.NamedChild(i); clause.Kind() == "import_clause" {
+			return onlyTypeSpecifiers(clause)
 		}
 	}
 	return false
@@ -616,8 +621,7 @@ func isReExport(node *sitter.Node) bool {
 }
 
 // isTypeOnlyReExport checks if a re-export is a TypeScript type-only re-export
-// (`export type { Foo } from "bar"` — no runtime coupling). The "type" keyword
-// appears as a direct child of the export_statement node.
+// (`export type { Foo }` or `export { type Foo }` — no runtime coupling).
 func isTypeOnlyReExport(node *sitter.Node) bool {
 	parent := node.Parent()
 	if parent == nil || parent.Kind() != "export_statement" {
@@ -626,6 +630,11 @@ func isTypeOnlyReExport(node *sitter.Node) bool {
 	for i := uint(0); i < parent.ChildCount(); i++ {
 		if parent.Child(i).Kind() == "type" {
 			return true
+		}
+	}
+	for i := uint(0); i < parent.NamedChildCount(); i++ {
+		if clause := parent.NamedChild(i); clause.Kind() == "export_clause" {
+			return onlyTypeSpecifiers(clause)
 		}
 	}
 	return false
@@ -663,4 +672,33 @@ func isSideEffectImport(node *sitter.Node) bool {
 		}
 	}
 	return true
+}
+
+func onlyTypeSpecifiers(clause *sitter.Node) bool {
+	count := 0
+	for i := uint(0); i < clause.NamedChildCount(); i++ {
+		child := clause.NamedChild(i)
+		switch child.Kind() {
+		case "comment":
+			continue
+		case "named_imports":
+			if !onlyTypeSpecifiers(child) {
+				return false
+			}
+		case "import_specifier", "export_specifier":
+			typed := false
+			for j := uint(0); j < child.ChildCount(); j++ {
+				if child.Child(j).Kind() == "type" {
+					typed = true
+				}
+			}
+			if !typed {
+				return false
+			}
+		default:
+			return false
+		}
+		count++
+	}
+	return count > 0
 }

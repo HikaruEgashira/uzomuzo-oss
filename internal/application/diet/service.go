@@ -273,6 +273,13 @@ func (s *Service) buildEntries(
 	maxExclusive int,
 	toolDeps map[string]struct{},
 ) []domaindiet.DietEntry {
+	npm := make(map[string][]string)
+	for _, purl := range graph.DirectDeps {
+		name, ecosystem, _ := parsePURLParts(purl)
+		if ecosystem == "npm" {
+			npm[strings.ToLower(name)] = append(npm[strings.ToLower(name)], purl)
+		}
+	}
 	entries := make([]domaindiet.DietEntry, 0, len(graph.DirectDeps))
 	for _, purl := range graph.DirectDeps {
 		entry := domaindiet.DietEntry{
@@ -309,6 +316,21 @@ func (s *Service) buildEntries(
 				} else {
 					entry.Coupling = domaindiet.CouplingAnalysis{IsUnused: true}
 				}
+			}
+		}
+
+		if entry.Ecosystem == "npm" && strings.HasPrefix(entry.Name, "@types/") {
+			entry.Scope = domaindiet.ScopeTypes
+			runtime := strings.TrimPrefix(entry.Name, "@types/")
+			if scope, name, ok := strings.Cut(runtime, "__"); ok {
+				runtime = "@" + scope + "/" + name
+			}
+			if own := coupling[entry.PURL]; own != nil && !own.Unanalyzed && !own.IsUnused {
+				entry.Coupling = *own
+			} else if purls := npm[strings.ToLower(runtime)]; len(purls) > 0 {
+				entry.Coupling = inheritedTypeCoupling(purls, coupling)
+			} else if coupling[entry.PURL] == nil {
+				entry.Coupling = domaindiet.CouplingAnalysis{Unanalyzed: true}
 			}
 		}
 

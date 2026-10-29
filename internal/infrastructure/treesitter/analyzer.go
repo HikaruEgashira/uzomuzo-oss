@@ -254,6 +254,9 @@ func (a *Analyzer) AnalyzeCoupling(
 		if err != nil {
 			return nil // skip unreadable entries
 		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
 
 		if d.IsDir() {
 			if skipDirs[d.Name()] {
@@ -329,7 +332,23 @@ dispatch:
 		return nil, nil
 	}
 
-	return buildCouplingResults(accum), nil
+	results := buildCouplingResults(accum)
+	onlyTypes := true
+	for purl := range accum {
+		for _, path := range importPaths[purl] {
+			if !strings.HasPrefix(path, "@types/") {
+				onlyTypes = false
+			}
+		}
+	}
+	if onlyTypes {
+		for purl := range importPaths {
+			if results[purl] == nil {
+				results[purl] = &domaindiet.CouplingAnalysis{Unanalyzed: true}
+			}
+		}
+	}
+	return results, nil
 }
 
 // mergeAccumulators folds the per-worker accumulator maps into one.
@@ -405,6 +424,13 @@ func (a *Analyzer) analyzeFile(
 
 	ext := filepath.Ext(path)
 	lid, ok := extToLang(ext)
+	isConfig := strings.HasPrefix(filepath.Base(path), "tsconfig") && ext == ".json"
+	if isConfig && importsOnly {
+		return
+	}
+	if isConfig {
+		lid, ok = langTypeScript, true
+	}
 	if !ok {
 		return
 	}
@@ -431,6 +457,14 @@ func (a *Analyzer) analyzeFile(
 		slog.Debug("failed to set language", "path", path, "lang", lid, "error", err)
 		return
 	}
+	if isConfig {
+		if cfg.compiledImport != nil {
+			for _, name := range configTypeNames(parser, src) {
+				recordTypeReference(name, relPath, importToPURL, accum)
+			}
+		}
+		return
+	}
 	// Parse returns *Tree directly (no error). A nil tree indicates parse
 	// failure; we skip the file. The official binding's ParseCtx is
 	// deprecated and will be removed in v0.26 — file-level context
@@ -445,6 +479,17 @@ func (a *Analyzer) analyzeFile(
 	}
 
 	root := tree.RootNode()
+	if (lid == langTypeScript || lid == langTSX) && cfg.compiledImport != nil {
+		for i := uint(0); i < root.NamedChildCount(); i++ {
+			comment := root.NamedChild(i)
+			if comment.Kind() != "comment" {
+				break
+			}
+			if name := referenceTypeName(comment.Utf8Text(src)); name != "" {
+				recordTypeReference(name, relPath, importToPURL, accum)
+			}
+		}
+	}
 	cursor := sitter.NewQueryCursor()
 
 	// Phase 1: Extract imports and build alias->PURL map for this file.
@@ -604,9 +649,12 @@ func (a *Analyzer) extractImports(
 				continue
 			}
 
-			// Skip TypeScript `import type` statements (no runtime coupling).
+			// Type-only syntax uses declarations without establishing runtime coupling.
 			if lid == langTypeScript || lid == langTSX {
-				if isTypeOnlyImport(node) {
+				if isTypeOnlyImport(node) || isTypeOnlyReExport(node) {
+					if purls := importToPURL[typeDeclarationImport(value)]; len(purls) > 0 {
+						aliasMap["\x00type:"+value] = purls
+					}
 					continue
 				}
 			}
