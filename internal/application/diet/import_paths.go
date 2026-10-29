@@ -11,6 +11,11 @@ import (
 	"github.com/package-url/packageurl-go"
 )
 
+const (
+	rubyRequireKeyPrefix  = "require:"
+	rubyConstantKeyPrefix = "const:"
+)
+
 // isWorkspaceDep returns true if the PURL represents a local workspace package
 // (npm/yarn/pnpm monorepo internal) that should be excluded from diet analysis.
 func isWorkspaceDep(purlStr string) bool {
@@ -112,6 +117,11 @@ func buildImportPaths(purls []string) map[string][]string {
 				result[p] = paths
 			}
 			continue
+		case "gem":
+			if paths := buildRubyImportPaths(parsed.Name); len(paths) > 0 {
+				result[p] = paths
+			}
+			continue
 		default:
 			importPath = parsed.Name
 		}
@@ -120,6 +130,41 @@ func buildImportPaths(purls []string) map[string][]string {
 		}
 	}
 	return result
+}
+
+// buildRubyImportPaths keeps require paths distinct from constant names.
+func buildRubyImportPaths(name string) []string {
+	lower := strings.ToLower(name)
+	seen := make(map[string]struct{})
+	paths := make([]string, 0, 4)
+	add := func(kindPrefix, path string) {
+		if path == "" {
+			return
+		}
+		key := kindPrefix + path
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		paths = append(paths, key)
+	}
+
+	add(rubyRequireKeyPrefix, lower)
+	if lower == "omniauth-google-oauth2" {
+		add(rubyRequireKeyPrefix, "omniauth/google/oauth2")
+	}
+	add(rubyConstantKeyPrefix, normalizeRubyConstantName(lower))
+	if base, ok := strings.CutSuffix(lower, "_rails"); ok {
+		add(rubyConstantKeyPrefix, normalizeRubyConstantName(base))
+	}
+	if base, ok := strings.CutSuffix(lower, "-rails"); ok {
+		add(rubyConstantKeyPrefix, normalizeRubyConstantName(base))
+	}
+	return paths
+}
+
+func normalizeRubyConstantName(name string) string {
+	return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(name))
 }
 
 // pypiPrefixes lists common PyPI distribution name prefixes that are not part
@@ -343,6 +388,23 @@ func isPyPIRuntimeDep(name string) bool {
 	}
 	_, ok := pypiRuntimeDeps[name]
 	return ok
+}
+
+var rubyRuntimeDeps = map[string]struct{}{
+	"mysql2": {}, "pg": {}, "sqlite3": {}, "trilogy": {},
+	"rails": {}, "minitest": {}, "rspec-rails": {},
+	"puma": {}, "unicorn": {}, "bootsnap": {}, "sprockets-rails": {},
+	"tzinfo-data": {}, "listen": {}, "spring": {}, "web-console": {},
+	"debug": {}, "byebug": {}, "pry-rails": {}, "dotenv-rails": {},
+	"rubocop": {}, "danger": {}, "brakeman": {}, "bundler-audit": {}, "syntax_tree": {},
+}
+
+func isRubyRuntimeDep(name string) bool {
+	lower := strings.ToLower(name)
+	if _, ok := rubyRuntimeDeps[lower]; ok {
+		return true
+	}
+	return strings.HasPrefix(lower, "rubocop-") || strings.HasPrefix(lower, "danger-")
 }
 
 // buildMavenImportPaths generates candidate import path prefixes for a Maven PURL.

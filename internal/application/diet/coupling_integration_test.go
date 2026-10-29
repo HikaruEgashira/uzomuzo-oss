@@ -328,3 +328,71 @@ urls = { Homepage = "https://example.invalid" }
 		t.Errorf("health lookup PURLs = %v, want %v", lookup.purls, wantLookups)
 	}
 }
+
+func TestBuildImportPaths_AnalyzeRubyRailsApp(t *testing.T) {
+	dir := t.TempDir()
+	source := `require "rails/all"
+Bundler.require(*Rails.groups)
+Rails.application
+FactoryBot.create(:user)
+`
+	if err := os.WriteFile(filepath.Join(dir, "application.rb"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	purls := []string{"pkg:gem/rails@8.0.0", "pkg:gem/factory_bot_rails@6.4.2"}
+	importPaths := buildImportPaths(purls)
+	analyzer := treesitter.NewAnalyzer()
+	t.Cleanup(analyzer.Close)
+	result, err := analyzer.AnalyzeCoupling(context.Background(), dir, importPaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, purl := range purls {
+		coupling, ok := result[purl]
+		if !ok {
+			t.Errorf("no coupling result for %s; import paths: %v", purl, importPaths[purl])
+			continue
+		}
+		if coupling.IsUnused || coupling.ImportFileCount != 1 {
+			t.Errorf("%s coupling = %+v, want one used file", purl, coupling)
+		}
+	}
+}
+
+func TestBuildImportPaths_RubyRequireDoesNotUseConstantAliases(t *testing.T) {
+	tests := []struct {
+		name   string
+		purl   string
+		source string
+	}{
+		{
+			name:   "constant-only alias is not a require path",
+			purl:   "pkg:gem/factory_bot_rails@6.4.2",
+			source: `require "factorybot"`,
+		},
+		{
+			name:   "interpolated require is not a static path",
+			purl:   "pkg:gem/foo@1.0.0",
+			source: `require "foo#{suffix}"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "app.rb"), []byte(tt.source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			analyzer := treesitter.NewAnalyzer()
+			t.Cleanup(analyzer.Close)
+			result, err := analyzer.AnalyzeCoupling(context.Background(), dir, buildImportPaths([]string{tt.purl}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result[tt.purl] != nil {
+				t.Errorf("%s got coupling from non-literal or non-require path: %+v", tt.purl, result[tt.purl])
+			}
+		})
+	}
+}

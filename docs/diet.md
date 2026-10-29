@@ -40,6 +40,8 @@ Known causes of a used dependency being reported as unused or trivial:
 
 When you use the [Claude Code skills](../claude-skills/), verify `unused` and `trivial` the same way; the skills are being updated to require it (#542).
 
+Ruby gem names are mapped to static `require` strings and constants heuristically. Interpolated or dynamically computed `require` paths are ignored, unknown gem-to-constant mappings can be missed, and Gemfile groups are not reported as separate scopes. Verify Ruby `unused` results before removing a gem.
+
 ## Architecture
 
 `uzomuzo diet` is distributed as a separate binary (`uzomuzo-diet`) because it uses tree-sitter (CGo) for multi-language source analysis. The main `uzomuzo` binary stays Pure Go and delegates to `uzomuzo-diet` transparently.
@@ -172,7 +174,7 @@ Analyzes your source code to measure how deeply each dependency is integrated:
 - **Call site count** — total usage sites across all files
 - **API breadth** — number of distinct APIs used from the dependency
 
-Supported languages: Go, Python, JavaScript/TypeScript, Java.
+Supported languages: Go, Python, JavaScript/TypeScript, Java, Ruby.
 
 #### Phase 2.5: PyPI import and console-script fallback
 
@@ -446,6 +448,16 @@ All languages use tree-sitter for AST-based analysis. Of a file larger than 1 Mi
 | Call sites | Method invocations, constructors (incl. generics `new Foo<T>()`), annotations, inheritance (`extends`/`implements`), type declarations, `instanceof`/casts, method references (`Foo::bar`), field access |
 | Ecosystem features | **Maven package overrides** (~40 entries): maps groupId/artifactId to actual Java packages where they differ (Guava, Jackson, commons-*, Spring Boot starters). **Runtime whitelist**: JDBC drivers, logging backends, WebJars marked as `ScopeRuntime`. **Spring Boot starter heuristics**: derives package prefix from starter suffix. |
 | Limitations | Reflection (`Class.forName(var)`), ServiceLoader, and Spring Boot autoconfiguration are [fundamentally undetectable](#java-runtime-loaded-dependency-detection) by static analysis. CycloneDX `scope` field not yet used (#303). See [ADR-0015](adr/0015-java-reflection-detection-strategy.md). Coordinates whose package is neither under the groupId nor in the override list match nothing, and artifacts sharing a package prefix can be credited with each other's use ([#547](https://github.com/future-architect/uzomuzo-oss/issues/547)). Instance calls are counted only through the class name or its lowerCamelCase form (`Gson` / `gson`), so `log.info(...)` or `mapper.readValue(...)` is missed. Kotlin is not read. |
+
+### Ruby
+
+| Capability | Details |
+|-----------|---------|
+| Files | `.rb`, `.rake`, `.gemspec`, `.ru`, `Gemfile`, and `Rakefile` |
+| Side-effect requires | Static `require "gem"` paths are matched separately from constant names and are marked as used without counting a callable alias; interpolated strings are ignored |
+| Constant references | Common gem-name/constant pairs (including `factory_bot_rails` and `omniauth-google-oauth2`) are matched when gems are loaded through `Bundler.require` |
+| Runtime gems | Common Rails frameworks, database adapters, app servers, and selected development tools are marked `ScopeRuntime` |
+| Limitations | Dynamic `require` targets and Gemfile group scopes are not resolved. Gem names with unconventional constant names need an explicit mapping. Methods on returned objects are not counted. |
 
 ### Go modules
 

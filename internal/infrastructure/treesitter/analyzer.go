@@ -87,6 +87,7 @@ const (
 	langTypeScript
 	langTSX
 	langJava
+	langRuby
 )
 
 // dotImportAlias is a sentinel alias for Go dot imports (import . "pkg").
@@ -203,6 +204,7 @@ func NewAnalyzer() *Analyzer {
 	registerTypeScriptConfig(a)
 	registerTSXConfig(a)
 	registerJavaConfig(a)
+	registerRubyConfig(a)
 
 	return a
 }
@@ -222,8 +224,19 @@ func extToLang(ext string) (langID, bool) {
 		return langTSX, true
 	case ".java":
 		return langJava, true
+	case ".rb", ".rake", ".gemspec", ".ru":
+		return langRuby, true
 	default:
 		return 0, false
+	}
+}
+
+func langForFile(path string) (langID, bool) {
+	switch filepath.Base(path) {
+	case "Gemfile", "Rakefile":
+		return langRuby, true
+	default:
+		return extToLang(filepath.Ext(path))
 	}
 }
 
@@ -430,6 +443,9 @@ func (a *Analyzer) analyzeFile(
 	}
 	if isConfig {
 		lid, ok = langTypeScript, true
+	}
+	if !isConfig {
+		lid, ok = langForFile(path)
 	}
 	if !ok {
 		return
@@ -646,6 +662,10 @@ func (a *Analyzer) extractImports(
 			// For Java: match as prefix of the full import path.
 			if lid == langJava {
 				a.handleJavaImport(node, value, importToPURL, aliasMap)
+				continue
+			}
+			if lid == langRuby {
+				a.handleRubyImport(node, src, value, importToPURL, aliasMap)
 				continue
 			}
 

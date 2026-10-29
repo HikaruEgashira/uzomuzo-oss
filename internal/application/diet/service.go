@@ -20,7 +20,7 @@ import (
 // SourceAnalyzer abstracts static analysis of source code against dependencies.
 type SourceAnalyzer interface {
 	// AnalyzeCoupling scans the source tree and returns coupling data per PURL.
-	// importPaths maps PURL -> []string of import paths for that ecosystem.
+	// importPaths maps PURL to candidate paths; Ruby keys use require: or const: prefixes.
 	AnalyzeCoupling(ctx context.Context, sourceRoot string, importPaths map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error)
 	// PyPIProjectNames returns package names declared by [project].name tables.
 	PyPIProjectNames(ctx context.Context, sourceRoot string) ([]string, error)
@@ -357,6 +357,9 @@ func (s *Service) buildEntries(
 				entry.Scope = domaindiet.ScopeTool
 			}
 		}
+		if entry.Scope == "" && entry.Ecosystem == "gem" && isRubyRuntimeDep(entry.Name) {
+			entry.Scope = domaindiet.ScopeRuntime
+		}
 
 		if m, ok := graph.Metrics[purl]; ok {
 			entry.Graph = *m
@@ -364,7 +367,7 @@ func (s *Service) buildEntries(
 
 		entry.Coupling.Unanalyzed = true
 		switch entry.Ecosystem {
-		case "golang", "pypi", "npm", "maven":
+		case "golang", "pypi", "npm", "maven", "gem":
 			if coupling != nil {
 				if c := coupling[purl]; c != nil {
 					entry.Coupling = *c
