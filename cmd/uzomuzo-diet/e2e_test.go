@@ -77,6 +77,7 @@ func runDiet(t *testing.T, format string) string {
 	t.Cleanup(sourceAnalyzer.Close)
 
 	opts := cli.DietOptions{
+		Offline:    true,
 		SBOMPath:   testSBOMPath,
 		SourceRoot: sourceRoot,
 		Format:     format,
@@ -258,6 +259,7 @@ func TestE2E_DietSourceValidation(t *testing.T) {
 
 	// --source pointing to a file should fail
 	opts := cli.DietOptions{
+		Offline:    true,
 		SBOMPath:   testSBOMPath,
 		SourceRoot: testSBOMPath, // a file, not a directory
 		Format:     "json",
@@ -335,6 +337,7 @@ func TestE2E_DietStdinSBOM(t *testing.T) {
 	}()
 
 	opts := cli.DietOptions{
+		Offline:    true,
 		SBOMPath:   "-",
 		SourceRoot: sourceRoot,
 		Format:     "json",
