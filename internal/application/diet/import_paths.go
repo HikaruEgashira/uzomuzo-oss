@@ -74,6 +74,11 @@ func buildImportPaths(purls []string) map[string][]string {
 				result[p] = paths
 			}
 			continue
+		case "gem":
+			if paths := buildRubyImportPaths(parsed.Name); len(paths) > 0 {
+				result[p] = paths
+			}
+			continue
 		default:
 			importPath = parsed.Name
 		}
@@ -82,6 +87,35 @@ func buildImportPaths(purls []string) map[string][]string {
 		}
 	}
 	return result
+}
+
+func buildRubyImportPaths(name string) []string {
+	lower := strings.ToLower(name)
+	seen := make(map[string]struct{})
+	paths := make([]string, 0, 4)
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+
+	add(lower)
+	add(strings.NewReplacer("_", "", "-", "").Replace(lower))
+	if base, ok := strings.CutSuffix(lower, "_rails"); ok {
+		add(strings.ReplaceAll(base, "_", ""))
+	}
+	if base, ok := strings.CutSuffix(lower, "-rails"); ok {
+		add(strings.NewReplacer("_", "", "-", "").Replace(base))
+	}
+	if lower == "omniauth-google-oauth2" {
+		add("omniauth/google/oauth2")
+	}
+	return paths
 }
 
 // pypiPrefixes lists common PyPI distribution name prefixes that are not part
@@ -289,6 +323,23 @@ var mavenRuntimeDeps = map[string]struct{}{
 	"org.webjars/webjars-locator-core": {},
 	"org.webjars/jquery":               {},
 	"org.webjars.npm/htmx.org":         {},
+}
+
+var rubyRuntimeDeps = map[string]struct{}{
+	"mysql2": {}, "pg": {}, "sqlite3": {}, "trilogy": {},
+	"rails": {}, "minitest": {}, "rspec-rails": {},
+	"puma": {}, "unicorn": {}, "bootsnap": {}, "sprockets-rails": {},
+	"tzinfo-data": {}, "listen": {}, "spring": {}, "web-console": {},
+	"debug": {}, "byebug": {}, "pry-rails": {}, "dotenv-rails": {},
+	"rubocop": {}, "danger": {}, "brakeman": {}, "bundler-audit": {}, "syntax_tree": {},
+}
+
+func isRubyRuntimeDep(name string) bool {
+	lower := strings.ToLower(name)
+	if _, ok := rubyRuntimeDeps[lower]; ok {
+		return true
+	}
+	return strings.HasPrefix(lower, "rubocop-") || strings.HasPrefix(lower, "danger-")
 }
 
 // buildMavenImportPaths generates candidate import path prefixes for a Maven PURL.

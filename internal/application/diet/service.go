@@ -302,6 +302,9 @@ func (s *Service) buildEntries(
 				entry.Scope = domaindiet.ScopeRuntime
 			}
 		}
+		if entry.Scope == "" && entry.Ecosystem == "gem" && isRubyRuntimeDep(entry.Name) {
+			entry.Scope = domaindiet.ScopeRuntime
+		}
 
 		if m, ok := graph.Metrics[purl]; ok {
 			entry.Graph = *m
@@ -309,7 +312,7 @@ func (s *Service) buildEntries(
 
 		entry.Coupling.Unanalyzed = true
 		switch entry.Ecosystem {
-		case "golang", "pypi", "npm", "maven":
+		case "golang", "pypi", "npm", "maven", "gem":
 			if coupling != nil {
 				if c := coupling[purl]; c != nil {
 					entry.Coupling = *c

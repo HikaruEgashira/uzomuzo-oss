@@ -126,6 +126,43 @@ func TestBuildImportPaths(t *testing.T) {
 	}
 }
 
+func TestBuildRubyImportPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		purl string
+		want []string
+	}{
+		{
+			name: "factory_bot_rails maps its require and constants",
+			purl: "pkg:gem/factory_bot_rails@6.4.2",
+			want: []string{"factory_bot_rails", "factorybotrails", "factorybot"},
+		},
+		{
+			name: "omniauth strategy maps nested require path",
+			purl: "pkg:gem/omniauth-google-oauth2@1.8.0",
+			want: []string{"omniauth-google-oauth2", "omniauthgoogleoauth2", "omniauth/google/oauth2"},
+		},
+		{
+			name: "simple gem keeps its name",
+			purl: "pkg:gem/mysql2@0.5.6",
+			want: []string{"mysql2"},
+		},
+		{
+			name: "rails suffix also maps the base constant",
+			purl: "pkg:gem/sprockets-rails@3.5.2",
+			want: []string{"sprockets-rails", "sprocketsrails", "sprockets"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildImportPaths([]string{tt.purl})[tt.purl]
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("buildImportPaths(%s) = %v, want %v", tt.purl, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildMavenImportPaths(t *testing.T) {
 	tests := []struct {
 		name string
@@ -991,8 +1028,43 @@ func TestRun_RuntimeDepsNotFlaggedAsUnused(t *testing.T) {
 			wantAPIBreadth: 1,
 		},
 		{
+			name:           "Rails framework recognized as runtime",
+			purl:           "pkg:gem/rails@8.0.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "Minitest recognized as runtime",
+			purl:           "pkg:gem/minitest@5.25.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "RSpec on Rails recognized as runtime",
+			purl:           "pkg:gem/rspec-rails@7.1.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "Rubocop extension recognized by prefix",
+			purl:           "pkg:gem/rubocop-performance@1.24.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
 			name:           "Non-runtime Maven dep unaffected",
 			purl:           "pkg:maven/com.google.guava/guava@33.0.0",
+			wantScope:      "",
+			wantIsUnused:   true,
+			wantAPIBreadth: 0,
+		},
+		{
+			name:           "Non-runtime gem unaffected",
+			purl:           "pkg:gem/acme_gem@1.0.0",
 			wantScope:      "",
 			wantIsUnused:   true,
 			wantAPIBreadth: 0,
@@ -1062,7 +1134,7 @@ func TestRun_RuntimeDepsNotFlaggedAsUnused(t *testing.T) {
 }
 
 func TestRunUnsupportedEcosystemsAreNotRemovalCandidates(t *testing.T) {
-	for _, purl := range []string{"pkg:gem/rails@7.0.0", "pkg:nuget/Example@1.0.0"} {
+	for _, purl := range []string{"pkg:nuget/Example@1.0.0"} {
 		t.Run(purl, func(t *testing.T) {
 			svc := NewService(&stubGraphAnalyzer{result: &domaindiet.GraphResult{
 				DirectDeps: []string{purl},

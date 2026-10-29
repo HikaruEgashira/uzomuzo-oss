@@ -50,3 +50,40 @@ func FuzzAnalyzeJavaScriptRequire(f *testing.F) {
 		_, _ = analyzer.AnalyzeCoupling(context.Background(), dir, importPaths) // only panics and hangs matter here
 	})
 }
+
+// FuzzAnalyzeRubyRequire checks that arbitrary Ruby source does not panic in
+// import extraction or the class/module name filters.
+func FuzzAnalyzeRubyRequire(f *testing.F) {
+	seeds := []string{
+		`require "mysql2"`,
+		`require "omniauth/google/oauth2"`,
+		`Bundler.require(*Rails.groups)`,
+		`FactoryBot.create(:user)`,
+		`FactoryBot::SyntaxRunner`,
+		`class Config; end`,
+		`class Foo::Config; end`,
+		`module Example; class Config; end; end`,
+		"class",
+		"",
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	analyzer := NewAnalyzer()
+	f.Cleanup(analyzer.Close)
+	importPaths := map[string][]string{
+		"pkg:gem/mysql2@0.5.6":                 {"mysql2"},
+		"pkg:gem/factory_bot_rails@6.4.2":      {"factory_bot_rails", "factorybotrails", "factorybot"},
+		"pkg:gem/omniauth-google-oauth2@1.8.0": {"omniauth-google-oauth2", "omniauthgoogleoauth2", "omniauth/google/oauth2"},
+		"pkg:gem/config@5.5.0":                 {"config"},
+	}
+
+	f.Fuzz(func(t *testing.T, src string) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "app.rb"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = analyzer.AnalyzeCoupling(context.Background(), dir, importPaths)
+	})
+}

@@ -157,3 +157,33 @@ public class Main {
 		// Absent from the result map is also acceptable — means no coupling data collected.
 	})
 }
+
+func TestBuildImportPaths_AnalyzeRubyRailsApp(t *testing.T) {
+	dir := t.TempDir()
+	source := `require "rails/all"
+Bundler.require(*Rails.groups)
+Rails.application
+FactoryBot.create(:user)
+`
+	if err := os.WriteFile(filepath.Join(dir, "application.rb"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	purls := []string{"pkg:gem/rails@8.0.0", "pkg:gem/factory_bot_rails@6.4.2"}
+	importPaths := buildImportPaths(purls)
+	analyzer := treesitter.NewAnalyzer()
+	t.Cleanup(analyzer.Close)
+	result, err := analyzer.AnalyzeCoupling(context.Background(), dir, importPaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, purl := range purls {
+		coupling, ok := result[purl]
+		if !ok {
+			t.Errorf("no coupling result for %s; import paths: %v", purl, importPaths[purl])
+			continue
+		}
+		if coupling.IsUnused || coupling.ImportFileCount != 1 {
+			t.Errorf("%s coupling = %+v, want one used file", purl, coupling)
+		}
+	}
+}
