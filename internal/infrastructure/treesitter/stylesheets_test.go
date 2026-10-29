@@ -20,6 +20,8 @@ func TestStylesheetPackageUsage(t *testing.T) {
 		{"main.scss", `@use "~kit/theme";`, "kit", true},
 		{"main.sass", `@forward "kit/theme"`, "kit", true},
 		{"main.less", `@import (reference) "~kit";`, "kit", true},
+		{"source-traversal.css", `@source "../../node_modules/kit/../../local";`, "kit", false},
+		{"source-normalized.css", `@source "../../node_modules/other/../kit";`, "kit", true},
 		{"source.css", `@source "../../node_modules/@scope/kit/src";`, "@scope/kit", true},
 		{"config.css", `@config "kit/config";`, "kit", true},
 		{"relative.css", `@import "./kit/css";`, "kit", false},

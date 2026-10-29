@@ -3,6 +3,7 @@
 package treesitter
 
 import (
+	"path"
 	"regexp"
 	"strings"
 )
@@ -33,6 +34,7 @@ func analyzeStylesheet(src []byte, file string, imports map[string][]string, acc
 			continue
 		}
 		if string(match[1]) == "source" {
+			spec = path.Clean(spec)
 			if i := strings.LastIndex(spec, "node_modules/"); i >= 0 && (i == 0 || spec[i-1] == '/') {
 				spec = spec[i+len("node_modules/"):]
 			} else {
