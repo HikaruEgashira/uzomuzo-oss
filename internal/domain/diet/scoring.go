@@ -13,6 +13,7 @@ const (
 
 // Difficulty constants for ImpactScore.Difficulty.
 const (
+	DifficultyUnknown  = "unknown"
 	DifficultyTrivial  = "trivial"
 	DifficultyEasy     = "easy"
 	DifficultyModerate = "moderate"
@@ -56,6 +57,9 @@ func ComputeImpactScore(graph GraphMetrics, coupling CouplingAnalysis, health He
 	graphImpact := normalizeGraphImpact(graph, maxExclusive)
 	couplingEffort := normalizeCouplingEffort(coupling)
 	healthRisk := health.HealthRisk
+	if coupling.Unanalyzed {
+		return ImpactScore{GraphImpact: graphImpact, HealthRisk: healthRisk, Difficulty: DifficultyUnknown}
+	}
 
 	effortFactor := math.Max(1.0-couplingEffort, 0.05)
 	priority := graphImpact * healthRisk * effortFactor
@@ -108,6 +112,12 @@ func ComputeSummary(entries []DietEntry, totalTransitive int) DietSummary {
 			s.TotalDirect++
 		}
 		s.TotalExclusiveTransitive += e.Graph.ExclusiveTransitiveCount
+		if e.Graph.StaysAsIndirect() {
+			s.StaysAsIndirectCount++
+		}
+		if e.Coupling.Unanalyzed {
+			continue
+		}
 		if e.Coupling.IsUnused && e.Relation == RelationDirect {
 			s.UnusedDirect++
 		}
@@ -118,9 +128,6 @@ func ComputeSummary(entries []DietEntry, totalTransitive int) DietSummary {
 		}
 		if e.Scores.PriorityScore > actionableScoreThreshold {
 			s.EstimatedRemovable++
-		}
-		if e.Graph.StaysAsIndirect() {
-			s.StaysAsIndirectCount++
 		}
 	}
 	return s

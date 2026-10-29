@@ -68,6 +68,8 @@ func (g GraphMetrics) StaysAsIndirect() bool {
 
 // CouplingAnalysis captures how deeply a dependency is wired into the codebase.
 type CouplingAnalysis struct {
+	// Unanalyzed means source analysis cannot establish whether this dependency is used.
+	Unanalyzed      bool
 	ImportFileCount int
 	CallSiteCount   int
 	APIBreadth      int

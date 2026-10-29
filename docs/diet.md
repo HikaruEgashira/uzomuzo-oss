@@ -21,7 +21,7 @@ Diet finds dependency usage by parsing source files and matching names; it does 
 | `import_file_count` ≥ 1, `is_unused: false` | Usually right. Exceptions: a local name equal to the import alias, and (Java) artifacts that share a package prefix can be credited with each other's imports. |
 | `is_unused: true`, `difficulty: trivial` | **Check before removing.** Search the code and configuration for the package name first. |
 | `call_site_count`, `api_breadth` | **Approximate, usually low.** Calls are matched by name, so methods called on returned objects (`c := client.New(); c.Get()`) are not counted; a local variable with the same name as the import is counted by mistake. |
-| Every entry has 0 imports and none is `unused` | Coupling was probably not measured (for example `--source` points at the wrong directory; diet then logs `no imports matched any dependency`). Check the log before using the coupling numbers. |
+| `coupling_analyzed: false`, `difficulty: unknown` | Source coupling was not measured, or the ecosystem has no supported source analyzer. These entries are not counted as unused, quick wins, or actionable removals. Table and detailed output show `not analyzed (<ecosystem>)`. |
 
 Known causes of a used dependency being reported as unused or trivial:
 

@@ -1057,3 +1057,63 @@ func TestRun_RuntimeDepsNotFlaggedAsUnused(t *testing.T) {
 		})
 	}
 }
+
+func TestRunUnsupportedEcosystemsAreNotRemovalCandidates(t *testing.T) {
+	for _, purl := range []string{"pkg:gem/rails@7.0.0", "pkg:nuget/Example@1.0.0"} {
+		t.Run(purl, func(t *testing.T) {
+			svc := NewService(&stubGraphAnalyzer{result: &domaindiet.GraphResult{
+				DirectDeps: []string{purl},
+				Metrics:    map[string]*domaindiet.GraphMetrics{purl: {ExclusiveTransitiveCount: 20}},
+			}}, &stubSourceAnalyzer{result: map[string]*domaindiet.CouplingAnalysis{}}, nil, nil)
+			plan, err := svc.Run(context.Background(), DietInput{SourceRoot: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := plan.Entries[0]
+			if entry.Coupling.IsUnused || entry.Scores.Difficulty != "unknown" {
+				t.Fatalf("unsupported dependency was classified: %+v", entry)
+			}
+			if plan.Summary.UnusedDirect != 0 || plan.Summary.EasyWins != 0 || plan.Summary.EstimatedRemovable != 0 {
+				t.Fatalf("unsupported dependency inflated removal totals: %+v", plan.Summary)
+			}
+		})
+	}
+}
+
+func TestRunCouplingAvailability(t *testing.T) {
+	for _, purl := range []string{"pkg:golang/example.com/lib@v1.0.0", "pkg:pypi/example@1.0.0", "pkg:npm/example@1.0.0", "pkg:maven/com.example/lib@1.0.0"} {
+		for _, available := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/available=%t", purl, available), func(t *testing.T) {
+				var coupling map[string]*domaindiet.CouplingAnalysis
+				if available {
+					coupling = map[string]*domaindiet.CouplingAnalysis{}
+				}
+				svc := NewService(&stubGraphAnalyzer{result: &domaindiet.GraphResult{DirectDeps: []string{purl}}},
+					&stubSourceAnalyzer{result: coupling}, nil, nil)
+				plan, err := svc.Run(context.Background(), DietInput{SourceRoot: t.TempDir()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				entry := plan.Entries[0]
+				if entry.Coupling.Unanalyzed == available || entry.Coupling.IsUnused != available {
+					t.Fatalf("incorrect analysis availability: %+v", entry.Coupling)
+				}
+			})
+		}
+	}
+}
+
+func TestRunKnownScopesWithoutSourceAnalysis(t *testing.T) {
+	svc := NewService(&stubGraphAnalyzer{result: &domaindiet.GraphResult{DirectDeps: []string{
+		"pkg:golang/example.com/tool@v1.0.0", "pkg:maven/mysql/mysql-connector-j@9.0.0",
+	}}}, nil, nil, nil)
+	plan, err := svc.Run(context.Background(), DietInput{ToolDeps: map[string]struct{}{"example.com/tool": {}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range plan.Entries {
+		if entry.Coupling.Unanalyzed || entry.Coupling.IsUnused || entry.Scores.Difficulty == domaindiet.DifficultyUnknown || entry.Scope == "" {
+			t.Fatalf("lost known non-static usage: %+v", entry)
+		}
+	}
+}
