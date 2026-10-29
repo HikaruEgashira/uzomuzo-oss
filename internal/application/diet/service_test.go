@@ -34,6 +34,7 @@ type stubSourceAnalyzer struct {
 	commandScripts map[string][]string
 	commandImports map[string][]string
 	commandErr     error
+	npmPeerDeps    map[string][]string
 	err            error
 }
 
@@ -50,6 +51,10 @@ func (s *stubSourceAnalyzer) AnalyzePyPICommandUsage(_ context.Context, _ string
 	s.commandScripts = scripts
 	s.commandImports = imports
 	return s.commandUsed, s.commandErr
+}
+
+func (s *stubSourceAnalyzer) NpmPeerDependencies(context.Context, string, []string) (map[string][]string, error) {
+	return s.npmPeerDeps, nil
 }
 
 // --- Tests ---
@@ -767,6 +772,10 @@ func (s *retrySourceAnalyzer) AnalyzePyPICommandUsage(context.Context, string, m
 	return nil, nil
 }
 
+func (s *retrySourceAnalyzer) NpmPeerDependencies(context.Context, string, []string) (map[string][]string, error) {
+	return nil, nil
+}
+
 func TestRun_WheelFallback(t *testing.T) {
 	t.Parallel()
 
@@ -1149,6 +1158,45 @@ func TestRun_RuntimeDepsNotFlaggedAsUnused(t *testing.T) {
 				t.Errorf("runtime dep should not be classified as trivial difficulty")
 			}
 		})
+	}
+}
+
+func TestRun_RequiredNpmPeerInheritsUsedDirectHost(t *testing.T) {
+	t.Parallel()
+	const (
+		next         = "pkg:npm/next@14.0.0"
+		reactDOM     = "pkg:npm/react-dom@18.0.0"
+		optionalPeer = "pkg:npm/optional-adapter@1.0.0"
+	)
+	source := &stubSourceAnalyzer{
+		result: map[string]*domaindiet.CouplingAnalysis{
+			next:         {ImportFileCount: 2, CallSiteCount: 4, APIBreadth: 3},
+			reactDOM:     {IsUnused: true},
+			optionalPeer: {IsUnused: true},
+		},
+		npmPeerDeps: map[string][]string{next: {"react-dom"}},
+	}
+	service := NewService(
+		&stubGraphAnalyzer{result: &domaindiet.GraphResult{DirectDeps: []string{next, reactDOM, optionalPeer}}},
+		source, nil, nil,
+	)
+	plan, err := service.Run(context.Background(), DietInput{SourceRoot: t.TempDir(), Offline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make(map[string]domaindiet.DietEntry, len(plan.Entries))
+	for _, entry := range plan.Entries {
+		entries[entry.PURL] = entry
+	}
+	peer := entries[reactDOM]
+	if peer.Scope != domaindiet.ScopePeer || peer.PeerRequiredBy != "next" || peer.Coupling.IsUnused || peer.Coupling.Unanalyzed {
+		t.Fatalf("required peer = %+v", peer)
+	}
+	if peer.Scores.CouplingEffort != entries[next].Scores.CouplingEffort || peer.Scores.Difficulty != entries[next].Scores.Difficulty {
+		t.Fatalf("peer effort=%+v, host effort=%+v", peer.Scores, entries[next].Scores)
+	}
+	if optional := entries[optionalPeer]; optional.Scope != "" || !optional.Coupling.IsUnused {
+		t.Fatalf("optional peer = %+v, want unused candidate", optional)
 	}
 }
 

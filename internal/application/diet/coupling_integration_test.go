@@ -197,6 +197,10 @@ func (r *sourceAnalyzerRecorder) AnalyzePyPICommandUsage(ctx context.Context, so
 	return r.analyzer.AnalyzePyPICommandUsage(ctx, sourceRoot, scripts, importPaths)
 }
 
+func (r *sourceAnalyzerRecorder) NpmPeerDependencies(ctx context.Context, sourceRoot string, directDeps []string) (map[string][]string, error) {
+	return r.analyzer.NpmPeerDependencies(ctx, sourceRoot, directDeps)
+}
+
 func TestRun_PyPIConsoleScriptUsage(t *testing.T) {
 	root := t.TempDir()
 	const purl = "pkg:pypi/private-cli@1.0.0"

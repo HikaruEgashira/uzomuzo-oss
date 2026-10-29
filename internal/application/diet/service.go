@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,8 @@ type SourceAnalyzer interface {
 	PyPIProjectNames(ctx context.Context, sourceRoot string) ([]string, error)
 	// AnalyzePyPICommandUsage matches installed console scripts to executable source configuration.
 	AnalyzePyPICommandUsage(ctx context.Context, sourceRoot string, scripts, importPaths map[string][]string) (map[string]struct{}, error)
+	// NpmPeerDependencies returns required peer names for direct npm packages in the source tree.
+	NpmPeerDependencies(ctx context.Context, sourceRoot string, directDeps []string) (map[string][]string, error)
 }
 
 // GraphAnalyzer abstracts dependency graph analysis from an SBOM.
@@ -133,6 +136,16 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 		kept = append(kept, purl)
 	}
 	graphResult.DirectDeps = kept
+	var npmPeerDeps map[string][]string
+	if s.sourceAnalyzer != nil && input.SourceRoot != "" {
+		npmPeerDeps, err = s.sourceAnalyzer.NpmPeerDependencies(ctx, input.SourceRoot, graphResult.DirectDeps)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("reading npm peer dependencies: %w", err)
+			}
+			slog.Warn("failed to read npm peer dependencies; continuing without peer scope", "error", err)
+		}
+	}
 	private := make(map[string]bool)
 	public := make([]string, 0, len(graphResult.DirectDeps))
 	for _, purl := range graphResult.DirectDeps {
@@ -269,7 +282,7 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 	// Phase 4: Scoring and prioritization
 	slog.Info("Phase 4: Computing scores and ranking")
 	maxExclusive := graphResult.MaxExclusiveTransitiveCount()
-	entries := s.buildEntries(graphResult, couplingResults, healthResults, maxExclusive, input.ToolDeps, cliDeps)
+	entries := s.buildEntries(graphResult, couplingResults, healthResults, maxExclusive, input.ToolDeps, cliDeps, npmPeerDeps)
 	for i := range entries {
 		if private[entries[i].PURL] {
 			entries[i].Health.MaintenanceStatus = "Private"
@@ -304,7 +317,9 @@ func (s *Service) buildEntries(
 	maxExclusive int,
 	toolDeps map[string]struct{},
 	cliDeps map[string]struct{},
+	npmPeerDeps map[string][]string,
 ) []domaindiet.DietEntry {
+	peerHosts := usedNpmPeerHosts(graph.DirectDeps, coupling, npmPeerDeps)
 	npm := make(map[string][]string)
 	for _, purl := range graph.DirectDeps {
 		name, ecosystem, _ := parsePURLParts(purl)
@@ -373,6 +388,16 @@ func (s *Service) buildEntries(
 				entry.Coupling = domaindiet.CouplingAnalysis{Unanalyzed: true}
 			}
 		}
+		var inheritedPeerCoupling *domaindiet.CouplingAnalysis
+		if hostPURL := peerHosts[purl]; hostPURL != "" {
+			peerHasDirectUsage := !entry.Coupling.Unanalyzed && !entry.Coupling.IsUnused
+			if host := coupling[hostPURL]; !peerHasDirectUsage && host != nil && !host.Unanalyzed && !host.IsUnused {
+				entry.Scope = domaindiet.ScopePeer
+				entry.PeerRequiredBy, _, _ = parsePURLParts(hostPURL)
+				inheritedPeerCoupling = host
+				entry.Coupling = domaindiet.CouplingAnalysis{}
+			}
+		}
 
 		// Non-static-import scopes (tool directives, runtime/reflection deps)
 		// intentionally have zero source imports. Override IsUnused so they are
@@ -396,9 +421,11 @@ func (s *Service) buildEntries(
 			entry.Health = domaindiet.HealthSignals{HealthRisk: 0.5} // unknown = moderate
 		}
 
-		entry.Scores = domaindiet.ComputeImpactScore(
-			entry.Graph, entry.Coupling, entry.Health, maxExclusive,
-		)
+		scoringCoupling := entry.Coupling
+		if inheritedPeerCoupling != nil {
+			scoringCoupling = *inheritedPeerCoupling
+		}
+		entry.Scores = domaindiet.ComputeImpactScore(entry.Graph, scoringCoupling, entry.Health, maxExclusive)
 
 		if name := graph.DisplayNames[purl]; name != "" {
 			entry.Name = name
@@ -406,6 +433,50 @@ func (s *Service) buildEntries(
 		entries = append(entries, entry)
 	}
 	return entries
+}
+
+func usedNpmPeerHosts(
+	directDeps []string,
+	coupling map[string]*domaindiet.CouplingAnalysis,
+	peerDeps map[string][]string,
+) map[string]string {
+	directByName := make(map[string][]string)
+	directPURLs := make(map[string]struct{}, len(directDeps))
+	for _, purl := range directDeps {
+		name, ecosystem, _ := parsePURLParts(purl)
+		if ecosystem != "npm" {
+			continue
+		}
+		directByName[strings.ToLower(name)] = append(directByName[strings.ToLower(name)], purl)
+		directPURLs[purl] = struct{}{}
+	}
+	owners := make(map[string][]string)
+	for hostPURL, peers := range peerDeps {
+		if _, direct := directPURLs[hostPURL]; !direct {
+			continue
+		}
+		hostCoupling := coupling[hostPURL]
+		if hostCoupling == nil || hostCoupling.Unanalyzed || hostCoupling.IsUnused {
+			continue
+		}
+		_, ecosystem, _ := parsePURLParts(hostPURL)
+		if ecosystem != "npm" {
+			continue
+		}
+		for _, peerName := range peers {
+			for _, peerPURL := range directByName[strings.ToLower(peerName)] {
+				if peerPURL != hostPURL {
+					owners[peerPURL] = append(owners[peerPURL], hostPURL)
+				}
+			}
+		}
+	}
+	peerHosts := make(map[string]string, len(owners))
+	for peerPURL, hosts := range owners {
+		sort.Strings(hosts)
+		peerHosts[peerPURL] = hosts[0]
+	}
+	return peerHosts
 }
 
 func computeHealthSignals(a *domain.Analysis) domaindiet.HealthSignals {

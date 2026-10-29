@@ -7,6 +7,8 @@ const (
 	ScopeTool = "tool"
 	// ScopeTypes indicates a TypeScript declaration dependency.
 	ScopeTypes = "types"
+	// ScopePeer indicates a required npm peer dependency of a used direct host.
+	ScopePeer = "peer"
 
 	// ScopeRuntime indicates a dependency loaded via runtime mechanisms
 	// (reflection, ServiceLoader, classpath resources) rather than static imports.
@@ -18,12 +20,13 @@ const (
 
 // DietEntry represents a single dependency's removability analysis.
 type DietEntry struct {
-	PURL      string
-	Name      string
-	Ecosystem string
-	Version   string
-	Relation  string // "direct" or "transitive"
-	Scope     string // "" (default), "tool" (Go tool directive), "types" (TypeScript declarations), or "runtime" (reflection or classpath resources)
+	PURL           string
+	Name           string
+	Ecosystem      string
+	Version        string
+	Relation       string // "direct" or "transitive"
+	Scope          string // "" (default), "tool", "types", "peer", or "runtime".
+	PeerRequiredBy string // npm host package requiring this peer, when ScopePeer.
 
 	Graph    GraphMetrics
 	Coupling CouplingAnalysis

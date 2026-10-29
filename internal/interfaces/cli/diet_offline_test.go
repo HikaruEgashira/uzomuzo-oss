@@ -54,3 +54,7 @@ func (emptyDietSource) PyPIProjectNames(context.Context, string) ([]string, erro
 func (emptyDietSource) AnalyzePyPICommandUsage(context.Context, string, map[string][]string, map[string][]string) (map[string]struct{}, error) {
 	return nil, nil
 }
+
+func (emptyDietSource) NpmPeerDependencies(context.Context, string, []string) (map[string][]string, error) {
+	return nil, nil
+}

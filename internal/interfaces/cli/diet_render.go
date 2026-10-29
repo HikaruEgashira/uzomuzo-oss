@@ -31,12 +31,13 @@ type dietJSONSummary struct {
 }
 
 type dietJSONEntry struct {
-	Rank      int    `json:"rank"`
-	PURL      string `json:"purl"`
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Ecosystem string `json:"ecosystem"`
-	Scope     string `json:"scope,omitempty"`
+	Rank           int    `json:"rank"`
+	PURL           string `json:"purl"`
+	Name           string `json:"name"`
+	Version        string `json:"version"`
+	Ecosystem      string `json:"ecosystem"`
+	Scope          string `json:"scope,omitempty"`
+	PeerRequiredBy string `json:"peer_required_by,omitempty"`
 
 	PriorityScore  float64 `json:"priority_score"`
 	GraphImpact    float64 `json:"graph_impact"`
@@ -105,6 +106,7 @@ func renderDietJSON(w io.Writer, plan *domaindiet.DietPlan) error {
 			Version:             e.Version,
 			Ecosystem:           e.Ecosystem,
 			Scope:               e.Scope,
+			PeerRequiredBy:      e.PeerRequiredBy,
 			PriorityScore:       e.Scores.PriorityScore,
 			GraphImpact:         e.Scores.GraphImpact,
 			CouplingEffort:      e.Scores.CouplingEffort,
@@ -161,7 +163,12 @@ func renderDietTable(w io.Writer, plan *domaindiet.DietPlan) error {
 			stays = "yes"
 		}
 		status := e.Health.MaintenanceStatus
-		if e.Coupling.Unanalyzed {
+		if e.Scope == domaindiet.ScopePeer {
+			if status != "" {
+				status += " | "
+			}
+			status += fmt.Sprintf("PEER (required by %s)", e.PeerRequiredBy)
+		} else if e.Coupling.Unanalyzed {
 			status += " not analyzed (" + e.Ecosystem + ")"
 		}
 		tp.printf("%d\t%.2f\t%s\t%s\t%d\t%s\t%d\t%d\t%s\n",
@@ -230,6 +237,8 @@ func renderDietDetailed(w io.Writer, plan *domaindiet.DietPlan) error {
 		p.printf("│  Coupling\n")
 		if e.Coupling.Unanalyzed {
 			p.printf("│    Status: not analyzed (%s)\n", e.Ecosystem)
+		} else if e.Scope == domaindiet.ScopePeer {
+			p.printf("│    Status: PEER (required by %s)\n", e.PeerRequiredBy)
 		} else if e.Scope == domaindiet.ScopeTool {
 			p.printf("│    Status: TOOL (go.mod tool directive — not imported in source)\n")
 		} else if e.Scope == domaindiet.ScopeRuntime {
