@@ -174,7 +174,7 @@ Analyzes your source code to measure how deeply each dependency is integrated:
 - **Call site count** — total usage sites across all files
 - **API breadth** — number of distinct APIs used from the dependency
 
-Supported languages: Go, Python, JavaScript/TypeScript, Java, Ruby.
+Supported languages: Go, Python, JavaScript/TypeScript, Java, Ruby. CSS, PostCSS, Sass, and Less package directives are scanned without an AST.
 
 #### Phase 2.5: PyPI import and console-script fallback
 
@@ -494,3 +494,9 @@ Type-only imports and re-exports retain matching declaration packages without co
 ### npm peer dependencies
 
 For each used direct npm host, diet reads its `peerDependencies` from `node_modules/<host>/package.json`, then `package-lock.json` v2/v3 or `pnpm-lock.yaml`, and finally a small fallback table (`next`, `@mui/material`, `react-redux`, and `@testing-library/react`). Optional peers are excluded. A required peer is retained only when it is also a direct dependency; its scope is `peer`, its removal effort follows the host, and table/detailed output identifies it as `PEER (required by <host>)`. A peer imported directly keeps its own source coupling. JSON output includes `peer_required_by`. Hosts without source usage do not retain their peers.
+
+### Stylesheet package references
+
+Literal quoted `@import`, `@use`, `@forward`, `@plugin`, and `@config` package references count as side-effect imports. Quoted `url(...)`, Less import options, and a leading `~` are supported. `@source` paths count when they contain a `node_modules/` path segment. Package subpaths and scoped npm packages use the same longest-prefix matching as JavaScript imports. Comments, ordinary strings, relative paths, and external URLs do not count.
+
+This scanner does not resolve interpolated Sass paths, aliases, or unquoted URLs. It follows the source scanner's file-size and directory exclusions; review an `unused` result when these limits apply.

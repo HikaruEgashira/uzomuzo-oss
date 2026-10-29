@@ -436,6 +436,17 @@ func (a *Analyzer) analyzeFile(
 	importsOnly := info.Size() > largeFileBytes
 
 	ext := filepath.Ext(path)
+	if isStylesheet(ext) {
+		limit := int64(largeFileBytes)
+		if importsOnly {
+			limit = largeFilePrefixBytes
+		}
+		src, readErr := readPrefix(path, limit)
+		if readErr == nil {
+			analyzeStylesheet(src, relPath, importToPURL, accum)
+		}
+		return
+	}
 	lid, ok := extToLang(ext)
 	isConfig := strings.HasPrefix(filepath.Base(path), "tsconfig") && ext == ".json"
 	if isConfig && importsOnly {
