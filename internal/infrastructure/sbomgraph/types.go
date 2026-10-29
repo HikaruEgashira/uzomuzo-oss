@@ -30,6 +30,7 @@ type BOMMetadata struct {
 type Component struct {
 	BOMRef     string      `json:"bom-ref"`
 	Name       string      `json:"name"`
+	Group      string      `json:"group"`
 	PURL       string      `json:"purl"`
 	Components []Component `json:"components"`
 }

@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/package-url/packageurl-go"
 
 	domaindiet "github.com/future-architect/uzomuzo-oss/internal/domain/diet"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/sbomgraph"
@@ -115,12 +118,38 @@ func (a *Analyzer) AnalyzeGraph(_ context.Context, sbomData []byte) (*domaindiet
 		}
 	}
 
+	displayNames := make(map[string]string)
+	collectGoDisplayNames(bom.Components, displayNames, 0)
 	return &domaindiet.GraphResult{
 		DirectDeps:      directList,
 		AllDeps:         allDepList,
 		Metrics:         metrics,
+		DisplayNames:    displayNames,
 		TotalTransitive: totalTransitive,
 	}, nil
+}
+
+func collectGoDisplayNames(components []sbomgraph.Component, names map[string]string, depth int) {
+	if depth > sbomgraph.MaxNestingDepth {
+		return
+	}
+	for _, component := range components {
+		p, err := packageurl.FromString(component.PURL)
+		if err == nil && p.Type == "golang" && component.Name != "" {
+			name := component.Name
+			if component.Group != "" {
+				name = component.Group + "/" + name
+			}
+			identity := p.Name
+			if p.Namespace != "" {
+				identity = p.Namespace + "/" + identity
+			}
+			if strings.EqualFold(name, identity) {
+				names[sbomgraph.NormalizePURL(component.PURL)] = name
+			}
+		}
+		collectGoDisplayNames(component.Components, names, depth+1)
+	}
 }
 
 // bfs returns all PURLs reachable from start (excluding start itself).

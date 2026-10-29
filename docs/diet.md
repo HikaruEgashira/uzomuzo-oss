@@ -402,6 +402,7 @@ All languages use tree-sitter for AST-based analysis. Of a file larger than 1 Mi
 | Dot imports | `import . "pkg"` — detected, marked as uncountable (symbols callable without prefix) |
 | Call sites | Selector expressions (`pkg.Func`), qualified types (`pkg.Type`) |
 | Ecosystem features | Go tool directives (`go.mod tool`, Go 1.24+) retained as tools; indirect-only Go requirements excluded from direct removal candidates |
+| Display names | Preserves Go module capitalization from matching CycloneDX component names; PURLs remain the identity keys |
 | Import path handling | Strips major version suffixes (`/v2`), `gopkg.in` version suffixes (`.v3`), hyphenated package aliases (`go-loser` -> `loser`, `geoip2-golang` -> `geoip2`) |
 | Limitations | Dot-imported symbols cannot be attributed to a specific dependency. Calls are missed when the package name differs from the last path element (`v4`, `v1`, `jsoniter`; [#551](https://github.com/future-architect/uzomuzo-oss/issues/551)). Methods called on returned values are not counted. |
 

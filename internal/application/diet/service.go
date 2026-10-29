@@ -307,6 +307,9 @@ func (s *Service) buildEntries(
 			entry.Graph, entry.Coupling, entry.Health, maxExclusive,
 		)
 
+		if name := graph.DisplayNames[purl]; name != "" {
+			entry.Name = name
+		}
 		entries = append(entries, entry)
 	}
 	return entries
