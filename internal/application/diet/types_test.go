@@ -19,7 +19,7 @@ func TestTypesInheritRuntimeUsage(t *testing.T) {
 		{"unavailable", nil, false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{react, types}}, tt.coupling, nil, 0, nil)
+			entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{react, types}}, tt.coupling, nil, 0, nil, nil)
 			got := entries[1]
 			if got.Scope != domaindiet.ScopeTypes {
 				t.Fatalf("scope=%q", got.Scope)
@@ -35,7 +35,7 @@ func TestTypesInheritRuntimeUsage(t *testing.T) {
 }
 
 func TestTypesWithoutRuntimeStayUnknown(t *testing.T) {
-	entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{"pkg:npm/%40types/unpaired@1"}}, map[string]*domaindiet.CouplingAnalysis{}, nil, 0, nil)
+	entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{"pkg:npm/%40types/unpaired@1"}}, map[string]*domaindiet.CouplingAnalysis{}, nil, 0, nil, nil)
 	if !entries[0].Coupling.Unanalyzed || entries[0].Coupling.IsUnused || entries[0].Scores.Difficulty != domaindiet.DifficultyUnknown {
 		t.Fatalf("unpaired types=%+v", entries[0])
 	}
@@ -45,7 +45,7 @@ func TestScopedTypesInheritUsedVersion(t *testing.T) {
 	const types = "pkg:npm/%40types/scope__name@1"
 	const unused = "pkg:npm/%40scope/name@1"
 	const used = "pkg:npm/%40scope/name@2"
-	entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{types, unused, used}}, map[string]*domaindiet.CouplingAnalysis{used: {ImportFileCount: 1}}, nil, 0, nil)
+	entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{types, unused, used}}, map[string]*domaindiet.CouplingAnalysis{used: {ImportFileCount: 1}}, nil, 0, nil, nil)
 	if entries[0].Coupling.IsUnused || entries[0].Coupling.Unanalyzed || entries[0].Coupling.ImportFileCount != 1 {
 		t.Fatalf("scoped usage=%+v", entries[0].Coupling)
 	}
@@ -53,7 +53,7 @@ func TestScopedTypesInheritUsedVersion(t *testing.T) {
 
 func TestTypesExplicitUseKeepsDeclarationsForUnusedRuntime(t *testing.T) {
 	const types = "pkg:npm/%40types/react@1"
-	entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{types, "pkg:npm/react@1"}}, map[string]*domaindiet.CouplingAnalysis{types: {ImportFileCount: 1}}, nil, 0, nil)
+	entries := (&Service{}).buildEntries(&domaindiet.GraphResult{DirectDeps: []string{types, "pkg:npm/react@1"}}, map[string]*domaindiet.CouplingAnalysis{types: {ImportFileCount: 1}}, nil, 0, nil, nil)
 	if entries[0].Coupling.IsUnused || entries[0].Coupling.ImportFileCount != 1 {
 		t.Fatalf("type-only usage=%+v", entries[0].Coupling)
 	}

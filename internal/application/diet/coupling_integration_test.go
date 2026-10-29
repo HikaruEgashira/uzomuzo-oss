@@ -14,6 +14,7 @@ import (
 	domain "github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
 	domaindiet "github.com/future-architect/uzomuzo-oss/internal/domain/diet"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/depgraph"
+	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/pypi"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/sbomgraph"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/treesitter"
 )
@@ -190,6 +191,46 @@ func (r *sourceAnalyzerRecorder) AnalyzeCoupling(ctx context.Context, sourceRoot
 
 func (r *sourceAnalyzerRecorder) PyPIProjectNames(ctx context.Context, sourceRoot string) ([]string, error) {
 	return r.analyzer.PyPIProjectNames(ctx, sourceRoot)
+}
+
+func (r *sourceAnalyzerRecorder) AnalyzePyPICommandUsage(ctx context.Context, sourceRoot string, scripts, importPaths map[string][]string) (map[string]struct{}, error) {
+	return r.analyzer.AnalyzePyPICommandUsage(ctx, sourceRoot, scripts, importPaths)
+}
+
+func TestRun_PyPIConsoleScriptUsage(t *testing.T) {
+	root := t.TempDir()
+	const purl = "pkg:pypi/private-cli@1.0.0"
+	distInfo := filepath.Join(root, ".venv", "lib", "python3.12", "site-packages", "private_cli-1.0.0.dist-info")
+	if err := os.MkdirAll(distInfo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"METADATA":         "Metadata-Version: 2.1\nName: private-cli\nVersion: 1.0.0\n",
+		"entry_points.txt": "[console_scripts]\nlocal-cli = private_cli.cli:main\n",
+	} {
+		if err := os.WriteFile(filepath.Join(distInfo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte("serve:\n\tuv run local-cli --port 8000\n# local-cli is only a comment here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(
+		&stubGraphAnalyzer{result: &domaindiet.GraphResult{DirectDeps: []string{purl}}},
+		treesitter.NewAnalyzer(), pypi.NewClient(), nil,
+	)
+	plan, err := svc.Run(context.Background(), DietInput{SourceRoot: root, Offline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(plan.Entries))
+	}
+	entry := plan.Entries[0]
+	if entry.Scope != domaindiet.ScopeTool || entry.Coupling.Unanalyzed || entry.Coupling.IsUnused {
+		t.Fatalf("console-script dependency = %+v, want used tool", entry)
+	}
 }
 
 func TestRun_PythonSelfDependenciesAreFilteredBeforeHealthLookup(t *testing.T) {

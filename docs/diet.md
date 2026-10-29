@@ -30,6 +30,7 @@ Known causes of a used dependency being reported as unused or trivial:
 | A `build`, `dist`, or `target` directory next to the manifest of a tool that writes there (for example `dist` next to `package.json`, `target` next to `pom.xml`) is treated as build output and not read, so source kept there is missed: for example a root `build/gulpfile.js`, or a Go package at `build/` in a module whose root also holds a `package.json` for JS tooling. Of a file over 1 MiB, only the first 64 KiB is parsed, for imports only; its calls are not counted | all | [#546](https://github.com/future-architect/uzomuzo-oss/issues/546) |
 | Maven coordinates whose Java package is not under the groupId and not in diet's override list (Lombok, Hibernate, OkHttp, Reactor, ...) | Java | [#547](https://github.com/future-architect/uzomuzo-oss/issues/547) |
 | The wheel fallback that finds a distribution's import name skips wheels over 5 MiB (scikit-learn, opencv-python) and can miss namespace packages (`google.*`, `azure.*`) | Python | [#548](https://github.com/future-architect/uzomuzo-oss/issues/548) |
+| Python command/runtime dependencies need config and metadata signals; unresolved private distributions stay not analyzed | Python | [#9](https://github.com/future-architect/uzomuzo-oss/issues/9) |
 | `.cjs` / `.mts` / `.cts` / `.vue` / `.svelte` files, `import x = require()`, template-literal `require`; `@types/*` and type-only packages | JS/TS | [#549](https://github.com/future-architect/uzomuzo-oss/issues/549) |
 | Dynamic `import()` and inline `require('pkg').f()` are rated `trivial` when no other use is counted, however many files use them; dot-imported calls are not counted | JS/TS, Go | [#550](https://github.com/future-architect/uzomuzo-oss/issues/550) |
 | Package name differs from the import path (`aws/signer/v4`, `k8s.io/api/core/v1`, `json-iterator/go`) | Go | [#551](https://github.com/future-architect/uzomuzo-oss/issues/551) |
@@ -172,9 +173,9 @@ Analyzes your source code to measure how deeply each dependency is integrated:
 
 Supported languages: Go, Python, JavaScript/TypeScript, Java.
 
-#### Phase 2.5: Wheel-based PyPI fallback
+#### Phase 2.5: PyPI import and console-script fallback
 
-For Python (PyPI) packages where Phase 2 finds zero import matches, diet automatically downloads the smallest wheel file and extracts actual import names from `top_level.txt`, `RECORD`, or `__init__.py` directory listing. This resolves common PyPI name mismatches (e.g., `beautifulsoup4` imports as `bs4`, `pyyaml` as `yaml`). Wheels larger than 5 MB are skipped.
+For PyPI packages where Phase 2 finds no import match, diet first checks matching `*.dist-info` metadata in a virtualenv under `--source`. If that does not provide import names, diet (unless offline or private) downloads the smallest PyPI wheel. It reads import names from `top_level.txt`, `RECORD`, or package directories, and console commands from `entry_points.txt`. Console scripts invoked in Makefiles, Dockerfiles, Procfiles, shell scripts, GitHub Actions workflows, or Python tool configuration count as use; comments and plain-text mentions do not. Wheels larger than 5 MB are skipped. When import/entry-point metadata cannot be resolved, coupling stays not analyzed rather than claiming the dependency is unused.
 
 ### Phase 3: Health Signals (API)
 
@@ -337,7 +338,7 @@ Java has the highest density of runtime-loaded dependencies among supported lang
 | Layer | Mechanism | Coverage | Limitations |
 |-------|-----------|----------|-------------|
 | **SBOM scope** (not yet implemented) | CycloneDX `scope` field from cdxgen / CycloneDX Maven Plugin | `optional` (provided) and `excluded` (test) deps | Cannot distinguish `compile` from `runtime` — both map to CycloneDX `required`. Trivy/syft do not populate this field. See #303. |
-| **Runtime whitelist** | Hardcoded `mavenRuntimeDeps` list of known groupId/artifactId coordinates | JDBC drivers, SLF4J logging backends, WebJars | Not exhaustive — unknown runtime deps will still be flagged as unused. Whitelist is expanded empirically via diet-fuzz testing. |
+| **Runtime whitelist** | Hardcoded `mavenRuntimeDeps` and `pypiRuntimeDeps` lists | Maven JDBC drivers, logging backends, WebJars; PyPI server/DB drivers, `greenlet`, test and lint tools | Not exhaustive — unknown runtime deps will still be flagged as unused. Whitelists are expanded empirically via diet-fuzz testing. |
 | **Tree-sitter AST** | Static analysis of `import` statements and call sites | Compile-time couplings (method calls, constructors, annotations, type declarations, generics, casts) | Cannot detect reflection (`Class.forName(var)`), ServiceLoader, Spring classpath scanning. Only 4.6% of reflection call sites are string-literal `Class.forName` detectable by AST. |
 
 **What is fundamentally undetectable:**
@@ -418,8 +419,8 @@ All languages use tree-sitter for AST-based analysis. Of a file larger than 1 Mi
 | Type-checking imports | `if TYPE_CHECKING:` blocks — skipped entirely (no runtime coupling) |
 | Try/except imports | `try: import x except ImportError:` — marked as feature-detection (blank import) |
 | Call sites | `obj.attr`, bare function calls, decorator usage (`@fixture`) |
-| Ecosystem features | **Wheel-based import resolution** (Phase 2.5 fallback): downloads smallest wheel to extract actual import names when heuristic paths match nothing. Strips common prefixes (`python-`, `py-`) from distribution names. |
-| Limitations | Wildcard-imported names cannot be attributed. Type-checking blocks fully ignored. The wheel fallback skips wheels over 5 MiB and can miss namespace packages ([#548](https://github.com/future-architect/uzomuzo-oss/issues/548)). Targets of `importlib.import_module` / `__import__` are not resolved, and `.ipynb` notebooks are not read. A bare imported name used as a base class or in `except` is not counted (`pkg.Base` is). |
+| Ecosystem features | **Import and console-script metadata resolution** (Phase 2.5 fallback): reads local virtualenv metadata first, then an online wheel when permitted. Console-script entry points are matched to executable config commands and `[tool.*]` configuration. Known servers (`uvicorn`, `gunicorn`, `hypercorn`, `daphne`), DB drivers (`aiomysql`, `asyncmy`, `pymysql`, `mysqlclient`, `psycopg`, `psycopg2`, `psycopg2-binary`, `asyncpg`, `aiosqlite`), `greenlet`, and tools (`pytest-*`, `ruff`, `mypy`, `black`, `pre-commit`) receive a runtime/tool scope even without imports. Strips common prefixes (`python-`, `py-`) from distribution names. |
+| Limitations | Wildcard-imported names cannot be attributed. Type-checking blocks fully ignored. Console-script detection is static and cannot evaluate arbitrary shell variables, generated config, or commands assembled dynamically. The wheel fallback skips wheels over 5 MiB and can miss namespace packages ([#548](https://github.com/future-architect/uzomuzo-oss/issues/548)). Targets of `importlib.import_module` / `__import__` are not resolved, and `.ipynb` notebooks are not read. A bare imported name used as a base class or in `except` is not counted (`pkg.Base` is). |
 
 ### JavaScript / TypeScript / TSX
 

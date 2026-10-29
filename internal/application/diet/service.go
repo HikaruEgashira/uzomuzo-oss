@@ -23,6 +23,8 @@ type SourceAnalyzer interface {
 	AnalyzeCoupling(ctx context.Context, sourceRoot string, importPaths map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error)
 	// PyPIProjectNames returns package names declared by [project].name tables.
 	PyPIProjectNames(ctx context.Context, sourceRoot string) ([]string, error)
+	// AnalyzePyPICommandUsage matches installed console scripts to executable source configuration.
+	AnalyzePyPICommandUsage(ctx context.Context, sourceRoot string, scripts, importPaths map[string][]string) (map[string]struct{}, error)
 }
 
 // GraphAnalyzer abstracts dependency graph analysis from an SBOM.
@@ -30,16 +32,18 @@ type GraphAnalyzer interface {
 	AnalyzeGraph(ctx context.Context, sbomData []byte) (*domaindiet.GraphResult, error)
 }
 
-// PyPIImportResolver resolves Python import names from wheel metadata.
+// PyPIImportResolver resolves import names and console scripts from local or wheel metadata.
 // This is the fallback used when heuristic import path guessing fails.
 type PyPIImportResolver interface {
-	// ResolveImportNames fetches the actual Python import names for a PyPI
-	// package by downloading and inspecting the smallest wheel file.
+	// ResolveLocalDistributionMetadata reads import names and console scripts from a local virtualenv.
+	ResolveLocalDistributionMetadata(ctx context.Context, sourceRoot, packageName string) (imports, scripts []string, err error)
+	// ResolveDistributionMetadata fetches Python import names and console scripts
+	// by downloading and inspecting the smallest wheel file.
 	// It may return an error if metadata lookup, wheel download, or inspection
 	// fails. Callers should treat such errors as non-fatal fallback failures
 	// (graceful degradation) and continue with heuristic guesses or an empty
 	// result when appropriate.
-	ResolveImportNames(ctx context.Context, packageName string) ([]string, error)
+	ResolveDistributionMetadata(ctx context.Context, packageName string) (imports, scripts []string, err error)
 }
 
 // DietInput contains the inputs for a diet analysis run.
@@ -150,6 +154,7 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 	// Phase 2 & 3: run concurrently (both only depend on graphResult from Phase 1)
 	var couplingResults map[string]*domaindiet.CouplingAnalysis
 	var healthResults map[string]*domain.Analysis
+	var cliDeps map[string]struct{}
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -170,16 +175,19 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 				slog.Info("Phase 2 complete", "analyzed", len(couplingResults))
 			}
 
-			// Phase 2.5: Wheel-based fallback for PyPI packages with zero matches.
+			// Phase 2.5: Local/wheel metadata fallback for unmatched PyPI packages.
 			// Gate on couplingErr (not couplingResults) because AnalyzeCoupling
 			// returns (nil, nil) when no imports matched — that nil map is exactly
 			// the scenario the wheel fallback should recover from.
-			if !input.Offline && s.pypiResolver != nil && couplingErr == nil {
-				retryPaths := s.resolveUnmatchedPyPI(ctx, public, couplingResults)
+			if couplingErr == nil {
+				retryPaths, unresolved, detectedCLIDeps := s.resolveUnmatchedPyPI(
+					ctx, input.SourceRoot, graphResult.DirectDeps, public, couplingResults, input.Offline,
+				)
+				cliDeps = detectedCLIDeps
 				if len(retryPaths) > 0 {
-					slog.Info("Phase 2.5: Retrying coupling with wheel-resolved import names", "count", len(retryPaths))
+					slog.Info("Phase 2.5: Retrying coupling with resolved import names", "count", len(retryPaths))
 
-					// Build combined importPaths (original heuristic + wheel-resolved)
+					// Build combined importPaths (original heuristic + metadata-resolved)
 					// so AnalyzeCoupling sees the full dependency set and collision
 					// attribution stays consistent with Phase 2.
 					combinedImportPaths := make(map[string][]string, len(importPaths))
@@ -211,11 +219,15 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 					retryCoupling, retryErr := s.sourceAnalyzer.AnalyzeCoupling(ctx, input.SourceRoot, combinedImportPaths)
 					if retryErr != nil {
 						slog.Warn("Phase 2.5 failed, continuing with heuristic results", "error", retryErr)
+						for purl := range retryPaths {
+							unresolved[purl] = struct{}{}
+						}
 					} else {
 						couplingResults = retryCoupling
 						slog.Info("Phase 2.5 complete", "resolved", len(retryCoupling))
 					}
 				}
+				couplingResults = markPyPIUnanalyzed(couplingResults, unresolved)
 			}
 		} else {
 			slog.Info("Phase 2: Skipped (no source root provided)")
@@ -257,7 +269,7 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 	// Phase 4: Scoring and prioritization
 	slog.Info("Phase 4: Computing scores and ranking")
 	maxExclusive := graphResult.MaxExclusiveTransitiveCount()
-	entries := s.buildEntries(graphResult, couplingResults, healthResults, maxExclusive, input.ToolDeps)
+	entries := s.buildEntries(graphResult, couplingResults, healthResults, maxExclusive, input.ToolDeps, cliDeps)
 	for i := range entries {
 		if private[entries[i].PURL] {
 			entries[i].Health.MaintenanceStatus = "Private"
@@ -291,6 +303,7 @@ func (s *Service) buildEntries(
 	health map[string]*domain.Analysis,
 	maxExclusive int,
 	toolDeps map[string]struct{},
+	cliDeps map[string]struct{},
 ) []domaindiet.DietEntry {
 	npm := make(map[string][]string)
 	for _, purl := range graph.DirectDeps {
@@ -319,6 +332,14 @@ func (s *Service) buildEntries(
 		if entry.Scope == "" && entry.Ecosystem == "maven" {
 			if _, ok := mavenRuntimeDeps[strings.ToLower(entry.Name)]; ok {
 				entry.Scope = domaindiet.ScopeRuntime
+			}
+		}
+		if entry.Scope == "" && entry.Ecosystem == "pypi" && isPyPIRuntimeDep(entry.Name) {
+			entry.Scope = domaindiet.ScopeRuntime
+		}
+		if entry.Scope == "" {
+			if _, ok := cliDeps[purl]; ok {
+				entry.Scope = domaindiet.ScopeTool
 			}
 		}
 
@@ -475,32 +496,124 @@ func parsePURLParts(purlStr string) (name, ecosystem, version string) {
 	return n, parsed.Type, parsed.Version
 }
 
-// resolveUnmatchedPyPI identifies PyPI PURLs that had zero coupling matches
-// and attempts to resolve their import names via wheel metadata. Returns
-// a map of PURL → resolved import paths suitable for a retry AnalyzeCoupling call.
+// resolveUnmatchedPyPI resolves metadata for PyPI PURLs without source matches.
 func (s *Service) resolveUnmatchedPyPI(
 	ctx context.Context,
+	sourceRoot string,
 	directDeps []string,
+	publicDeps []string,
 	couplingResults map[string]*domaindiet.CouplingAnalysis,
-) map[string][]string {
+	offline bool,
+) (map[string][]string, map[string]struct{}, map[string]struct{}) {
 	retryPaths := make(map[string][]string)
+	commandScripts := make(map[string][]string)
+	commandImports := make(map[string][]string)
+	public := make(map[string]struct{}, len(publicDeps))
+	for _, purl := range publicDeps {
+		public[purl] = struct{}{}
+	}
+	unresolved := make(map[string]struct{})
+	cliDeps := make(map[string]struct{})
 	for _, purl := range directDeps {
 		parsed, err := packageurl.FromString(purl)
 		if err != nil || parsed.Type != "pypi" {
 			continue
 		}
-		// Only retry packages that got zero matches from heuristic paths.
-		if _, found := couplingResults[purl]; found {
+		if c := couplingResults[purl]; c != nil && !c.Unanalyzed {
 			continue
 		}
-		names, resolveErr := s.pypiResolver.ResolveImportNames(ctx, parsed.Name)
-		if resolveErr != nil {
-			slog.Debug("pypi_wheel: resolve failed, skipping", "package", parsed.Name, "error", resolveErr)
+		if s.pypiResolver == nil {
+			unresolved[purl] = struct{}{}
 			continue
+		}
+		names, scripts, resolveErr := s.pypiResolver.ResolveLocalDistributionMetadata(ctx, sourceRoot, parsed.Name)
+		if resolveErr != nil {
+			slog.Debug("pypi_local: import metadata lookup failed", "package", parsed.Name, "error", resolveErr)
+		}
+		if len(names) == 0 && !offline {
+			if _, isPublic := public[purl]; !isPublic {
+				if len(scripts) == 0 {
+					unresolved[purl] = struct{}{}
+					continue
+				}
+			} else {
+				wheelNames, wheelScripts, wheelErr := s.pypiResolver.ResolveDistributionMetadata(ctx, parsed.Name)
+				if wheelErr != nil {
+					slog.Debug("pypi_wheel: resolve failed, skipping", "package", parsed.Name, "error", wheelErr)
+				} else {
+					if len(names) == 0 {
+						names = wheelNames
+					}
+					if len(scripts) == 0 {
+						scripts = wheelScripts
+					}
+				}
+			}
 		}
 		if len(names) > 0 {
 			retryPaths[purl] = names
+			commandImports[purl] = names
+		}
+		if len(scripts) > 0 {
+			commandScripts[purl] = scripts
+		}
+		if len(names) == 0 && len(scripts) == 0 {
+			unresolved[purl] = struct{}{}
 		}
 	}
-	return retryPaths
+	if (len(commandScripts) > 0 || len(commandImports) > 0) && s.sourceAnalyzer != nil {
+		used, err := s.sourceAnalyzer.AnalyzePyPICommandUsage(ctx, sourceRoot, commandScripts, commandImports)
+		if err != nil {
+			slog.Warn("PyPI console-script analysis failed", "error", err)
+			for purl := range commandScripts {
+				unresolved[purl] = struct{}{}
+			}
+			for purl := range commandImports {
+				unresolved[purl] = struct{}{}
+			}
+		} else {
+			for purl := range used {
+				if _, ok := commandScripts[purl]; !ok {
+					if _, ok := commandImports[purl]; !ok {
+						continue
+					}
+				}
+				cliDeps[purl] = struct{}{}
+				delete(unresolved, purl)
+			}
+			for purl := range commandScripts {
+				if len(commandImports[purl]) == 0 {
+					if _, found := cliDeps[purl]; !found {
+						unresolved[purl] = struct{}{}
+					}
+				}
+			}
+		}
+	} else if len(commandScripts) > 0 || len(commandImports) > 0 {
+		for purl := range commandScripts {
+			unresolved[purl] = struct{}{}
+		}
+		for purl := range commandImports {
+			unresolved[purl] = struct{}{}
+		}
+	}
+	return retryPaths, unresolved, cliDeps
+}
+
+func markPyPIUnanalyzed(
+	couplingResults map[string]*domaindiet.CouplingAnalysis,
+	unresolved map[string]struct{},
+) map[string]*domaindiet.CouplingAnalysis {
+	if len(unresolved) == 0 {
+		return couplingResults
+	}
+	if couplingResults == nil {
+		couplingResults = make(map[string]*domaindiet.CouplingAnalysis, len(unresolved))
+	}
+	for purl := range unresolved {
+		if couplingResults[purl] == nil || couplingResults[purl].Unanalyzed {
+			couplingResults[purl] = &domaindiet.CouplingAnalysis{Unanalyzed: true}
+		}
+	}
+	return couplingResults
 }

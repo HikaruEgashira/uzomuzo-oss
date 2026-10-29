@@ -50,3 +50,7 @@ func (emptyDietSource) AnalyzeCoupling(context.Context, string, map[string][]str
 func (emptyDietSource) PyPIProjectNames(context.Context, string) ([]string, error) {
 	return nil, nil
 }
+
+func (emptyDietSource) AnalyzePyPICommandUsage(context.Context, string, map[string][]string, map[string][]string) (map[string]struct{}, error) {
+	return nil, nil
+}

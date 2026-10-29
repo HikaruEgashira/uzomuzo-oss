@@ -2,8 +2,8 @@ package diet
 
 // Scope constants for DietEntry.Scope.
 const (
-	// ScopeTool indicates a Go tool directive dependency (Go 1.24+).
-	// Tool deps are dev/CI executables that intentionally have zero source imports.
+	// ScopeTool indicates a declared tool or a console script used by the project.
+	// These executables intentionally may have zero source imports.
 	ScopeTool = "tool"
 	// ScopeTypes indicates a TypeScript declaration dependency.
 	ScopeTypes = "types"

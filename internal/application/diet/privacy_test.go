@@ -12,9 +12,13 @@ import (
 
 type recordingResolver struct{ names []string }
 
-func (r *recordingResolver) ResolveImportNames(_ context.Context, name string) ([]string, error) {
+func (*recordingResolver) ResolveLocalDistributionMetadata(context.Context, string, string) ([]string, []string, error) {
+	return nil, nil, nil
+}
+
+func (r *recordingResolver) ResolveDistributionMetadata(_ context.Context, name string) ([]string, []string, error) {
 	r.names = append(r.names, name)
-	return nil, nil
+	return nil, nil, nil
 }
 
 func TestPrivateDependenciesStayLocal(t *testing.T) {
@@ -49,6 +53,9 @@ func TestPrivateDependenciesStayLocal(t *testing.T) {
 				t.Fatalf("private dependencies were removed from local analysis")
 			}
 			for _, entry := range plan.Entries {
+				if entry.PURL == privatePy && (!entry.Coupling.Unanalyzed || entry.Coupling.IsUnused) {
+					t.Fatalf("private unresolved PyPI dependency was classified: %+v", entry.Coupling)
+				}
 				want := "Private"
 				if entry.PURL == publicPy {
 					want = ""

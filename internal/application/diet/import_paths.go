@@ -329,6 +329,22 @@ var mavenRuntimeDeps = map[string]struct{}{
 	"org.webjars.npm/htmx.org":         {},
 }
 
+var pypiRuntimeDeps = map[string]struct{}{
+	"uvicorn": {}, "gunicorn": {}, "hypercorn": {}, "daphne": {},
+	"aiomysql": {}, "asyncmy": {}, "pymysql": {}, "mysqlclient": {},
+	"psycopg": {}, "psycopg2": {}, "psycopg2-binary": {}, "asyncpg": {}, "aiosqlite": {},
+	"greenlet": {}, "ruff": {}, "mypy": {}, "black": {}, "pre-commit": {},
+}
+
+func isPyPIRuntimeDep(name string) bool {
+	name = domain.NormalizePyPIName(name)
+	if name == "pytest" || strings.HasPrefix(name, "pytest-") {
+		return true
+	}
+	_, ok := pypiRuntimeDeps[name]
+	return ok
+}
+
 // buildMavenImportPaths generates candidate import path prefixes for a Maven PURL.
 // It combines well-known overrides with heuristic candidates (groupId, groupId.artifactId).
 func buildMavenImportPaths(parsed packageurl.PackageURL) []string {

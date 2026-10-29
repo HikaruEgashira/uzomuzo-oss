@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,6 +45,17 @@ func TestExtractImportNamesFromWheel_TopLevelTxt(t *testing.T) {
 	names := extractImportNamesFromWheel(wheel)
 	if len(names) != 1 || names[0] != "bs4" {
 		t.Fatalf("expected [bs4], got %v", names)
+	}
+}
+
+func TestExtractConsoleScriptsFromWheel(t *testing.T) {
+	t.Parallel()
+	wheel := buildTestWheel(t, map[string]string{
+		"pkg-1.0.dist-info/entry_points.txt": "[console_scripts]\nuvicorn = module:main\nuv = module:run\n[gui_scripts]\ngui = module:main\n",
+	})
+	want := []string{"uv", "uvicorn"}
+	if got := extractConsoleScriptsFromWheel(wheel); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("extractConsoleScriptsFromWheel() = %v, want %v", got, want)
 	}
 }
 
@@ -196,6 +209,81 @@ func TestResolveImportNames_Integration(t *testing.T) {
 	}
 }
 
+func TestResolveLocalImportNames_TopLevelTxt(t *testing.T) {
+	root := t.TempDir()
+	distInfo := filepath.Join(root, ".venv", "lib", "python3.12", "site-packages", "private_server-1.0.dist-info")
+	if err := os.MkdirAll(distInfo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"METADATA":      "Metadata-Version: 2.1\nName: private_server\nVersion: 1.0\n",
+		"top_level.txt": "private_api\n",
+	} {
+		if err := os.WriteFile(filepath.Join(distInfo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	client := NewClient()
+	got, err := client.ResolveLocalImportNames(context.Background(), root, "private-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "private_api" {
+		t.Fatalf("ResolveLocalImportNames() = %v, want [private_api]", got)
+	}
+}
+
+func TestResolveLocalDistributionMetadata_ConsoleScripts(t *testing.T) {
+	root := t.TempDir()
+	distInfo := filepath.Join(root, ".venv", "lib", "python3.12", "site-packages", "uvicorn-0.30.0.dist-info")
+	if err := os.MkdirAll(distInfo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"METADATA":         "Metadata-Version: 2.1\nName: uvicorn\nVersion: 0.30.0\n",
+		"top_level.txt":    "uvicorn\n",
+		"entry_points.txt": "[console_scripts]\nuvicorn = uvicorn.main:main\n[gui_scripts]\nweb = uvicorn.main:main\n",
+	} {
+		if err := os.WriteFile(filepath.Join(distInfo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	imports, scripts, err := NewClient().ResolveLocalDistributionMetadata(context.Background(), root, "uvicorn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imports) != 1 || imports[0] != "uvicorn" || len(scripts) != 1 || scripts[0] != "uvicorn" {
+		t.Fatalf("ResolveLocalDistributionMetadata() = imports %v, scripts %v", imports, scripts)
+	}
+}
+
+func TestResolveLocalImportNames_RECORDFallback(t *testing.T) {
+	root := t.TempDir()
+	distInfo := filepath.Join(root, "venv", "Lib", "site-packages", "private_server-1.0.dist-info")
+	if err := os.MkdirAll(distInfo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"METADATA": "Metadata-Version: 2.1\nName: private-server\n",
+		"RECORD":   "private_api/__init__.py,sha256=abc,0\nprivate_api/core.py,sha256=def,10\n",
+	} {
+		if err := os.WriteFile(filepath.Join(distInfo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	client := NewClient()
+	got, err := client.ResolveLocalImportNames(context.Background(), root, "private-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "private_api" {
+		t.Fatalf("ResolveLocalImportNames() = %v, want [private_api]", got)
+	}
+}
+
 func TestResolveImportNames_NoWheel(t *testing.T) {
 	t.Parallel()
 
@@ -258,13 +346,14 @@ func TestResolveImportNames_WheelTooLarge(t *testing.T) {
 	}
 }
 
-func TestResolveImportNames_Cache(t *testing.T) {
+func TestResolveDistributionMetadata_Cache(t *testing.T) {
 	t.Parallel()
 	var hits int32
 
 	wheel := buildTestWheel(t, map[string]string{
-		"yaml/__init__.py":                   "",
-		"pyyaml-6.0.dist-info/top_level.txt": "yaml\n",
+		"yaml/__init__.py":                      "",
+		"pyyaml-6.0.dist-info/top_level.txt":    "yaml\n",
+		"pyyaml-6.0.dist-info/entry_points.txt": "[console_scripts]\nyaml-cli = yaml.cli:main\n",
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -298,22 +387,28 @@ func TestResolveImportNames_Cache(t *testing.T) {
 	ctx := context.Background()
 
 	// First call — should hit network.
-	names1, err := c.ResolveImportNames(ctx, "pyyaml")
+	names1, scripts1, err := c.ResolveDistributionMetadata(ctx, "pyyaml")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 	if len(names1) != 1 || names1[0] != "yaml" {
 		t.Fatalf("first call: expected [yaml], got %v", names1)
 	}
+	if len(scripts1) != 1 || scripts1[0] != "yaml-cli" {
+		t.Fatalf("first call: expected [yaml-cli], got %v", scripts1)
+	}
 	firstHits := atomic.LoadInt32(&hits)
 
 	// Second call — should hit cache (no new HTTP requests).
-	names2, err := c.ResolveImportNames(ctx, "pyyaml")
+	names2, scripts2, err := c.ResolveDistributionMetadata(ctx, "pyyaml")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if len(names2) != 1 || names2[0] != "yaml" {
 		t.Fatalf("second call: expected [yaml], got %v", names2)
+	}
+	if len(scripts2) != 1 || scripts2[0] != "yaml-cli" {
+		t.Fatalf("second call: expected [yaml-cli], got %v", scripts2)
 	}
 	secondHits := atomic.LoadInt32(&hits)
 	if secondHits != firstHits {
