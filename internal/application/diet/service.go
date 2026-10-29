@@ -21,6 +21,8 @@ type SourceAnalyzer interface {
 	// AnalyzeCoupling scans the source tree and returns coupling data per PURL.
 	// importPaths maps PURL -> []string of import paths for that ecosystem.
 	AnalyzeCoupling(ctx context.Context, sourceRoot string, importPaths map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error)
+	// PyPIProjectNames returns package names declared by [project].name tables.
+	PyPIProjectNames(ctx context.Context, sourceRoot string) ([]string, error)
 }
 
 // GraphAnalyzer abstracts dependency graph analysis from an SBOM.
@@ -95,6 +97,22 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 	if err != nil {
 		return nil, fmt.Errorf("graph analysis failed: %w", err)
 	}
+	var projectNames []string
+	if s.sourceAnalyzer != nil && input.SourceRoot != "" {
+		projectNames, err = s.sourceAnalyzer.PyPIProjectNames(ctx, input.SourceRoot)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("reading Python project names: %w", err)
+			}
+			slog.Warn("failed to read Python project names; continuing without workspace filtering", "error", err)
+		}
+	}
+	filteredDirectDeps, selfDeps := filterPyPIProjectDeps(graphResult.DirectDeps, graphResult.RootPURL, projectNames)
+	graphResult.DirectDeps = filteredDirectDeps
+	pythonProjectDepsFiltered := len(selfDeps)
+	for _, purl := range selfDeps {
+		delete(graphResult.Metrics, purl)
+	}
 	// Filter workspace-local packages (npm monorepo internals) before analysis.
 	preFilterCount := len(graphResult.DirectDeps)
 	graphResult.DirectDeps = filterWorkspaceDeps(graphResult.DirectDeps)
@@ -125,6 +143,7 @@ func (s *Service) Run(ctx context.Context, input DietInput) (*domaindiet.DietPla
 		"direct", len(graphResult.DirectDeps),
 		"totalTransitive", graphResult.TotalTransitive,
 		"workspaceDepsFiltered", workspaceFiltered,
+		"pythonProjectDepsFiltered", pythonProjectDepsFiltered,
 		"go_indirect_filtered", goIndirectFiltered,
 	)
 

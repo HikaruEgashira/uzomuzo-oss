@@ -35,6 +35,7 @@ type DietEntry struct {
 type GraphResult struct {
 	DirectDeps      []string
 	AllDeps         []string
+	RootPURL        string // PURL from CycloneDX metadata.component, when present.
 	Metrics         map[string]*GraphMetrics
 	DisplayNames    map[string]string // normalized PURL to original SBOM name
 	TotalTransitive int

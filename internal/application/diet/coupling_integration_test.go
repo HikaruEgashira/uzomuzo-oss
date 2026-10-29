@@ -4,10 +4,17 @@ package diet
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/future-architect/uzomuzo-oss/internal/application"
+	domain "github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
+	domaindiet "github.com/future-architect/uzomuzo-oss/internal/domain/diet"
+	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/depgraph"
+	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/sbomgraph"
 	"github.com/future-architect/uzomuzo-oss/internal/infrastructure/treesitter"
 )
 
@@ -156,4 +163,113 @@ public class Main {
 		}
 		// Absent from the result map is also acceptable — means no coupling data collected.
 	})
+}
+
+type purlLookupRecorder struct {
+	purls []string
+}
+
+func (r *purlLookupRecorder) AnalyzeFromPURLs(_ context.Context, purls []string) (map[string]*domain.Analysis, error) {
+	r.purls = append([]string(nil), purls...)
+	return map[string]*domain.Analysis{}, nil
+}
+
+func (r *purlLookupRecorder) AnalyzeFromGitHubURLs(_ context.Context, _ []string) (map[string]*domain.Analysis, error) {
+	return map[string]*domain.Analysis{}, nil
+}
+
+type sourceAnalyzerRecorder struct {
+	analyzer    *treesitter.Analyzer
+	importPaths map[string][]string
+}
+
+func (r *sourceAnalyzerRecorder) AnalyzeCoupling(ctx context.Context, sourceRoot string, importPaths map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error) {
+	r.importPaths = importPaths
+	return r.analyzer.AnalyzeCoupling(ctx, sourceRoot, importPaths)
+}
+
+func (r *sourceAnalyzerRecorder) PyPIProjectNames(ctx context.Context, sourceRoot string) ([]string, error) {
+	return r.analyzer.PyPIProjectNames(ctx, sourceRoot)
+}
+
+func TestRun_PythonSelfDependenciesAreFilteredBeforeHealthLookup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[project]\nname = \"Local_Project\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		rootPURL        = "pkg:pypi/Root_Project@0.1.0"
+		selfPURL        = "pkg:pypi/root-project@0.2.0"
+		projectPURL     = "pkg:pypi/local.project@1.2.3"
+		requestsPURL    = "pkg:pypi/requests@2.31.0"
+		npmSameNamePURL = "pkg:npm/local-project@1.2.3"
+	)
+	bom := sbomgraph.BOMEnvelope{
+		Metadata: &sbomgraph.BOMMetadata{Component: &sbomgraph.Component{
+			BOMRef: "root", PURL: rootPURL,
+		}},
+		Components: []sbomgraph.Component{
+			{BOMRef: "self", PURL: selfPURL},
+			{BOMRef: "project", PURL: projectPURL},
+			{BOMRef: "requests", PURL: requestsPURL},
+			{BOMRef: "npm-same-name", PURL: npmSameNamePURL},
+		},
+		Dependencies: []sbomgraph.Dependency{
+			{Ref: "root", DependsOn: []string{"self", "project", "requests", "npm-same-name"}},
+			{Ref: "self"},
+			{Ref: "project"},
+			{Ref: "requests"},
+			{Ref: "npm-same-name"},
+		},
+	}
+	sbomData, err := json.Marshal(bom)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lookup := &purlLookupRecorder{}
+	analysisService := application.NewAnalysisService(lookup)
+	graphAnalyzer := depgraph.NewAnalyzer()
+	sourceAnalyzer := &sourceAnalyzerRecorder{analyzer: treesitter.NewAnalyzer()}
+	t.Cleanup(sourceAnalyzer.analyzer.Close)
+	service := NewService(graphAnalyzer, sourceAnalyzer, nil, analysisService)
+	plan, err := service.Run(context.Background(), DietInput{
+		SBOMData: sbomData, SourceRoot: dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries := make(map[string]struct{}, len(plan.Entries))
+	for _, entry := range plan.Entries {
+		entries[entry.PURL] = struct{}{}
+	}
+	for _, purl := range []string{selfPURL, projectPURL} {
+		if _, ok := entries[purl]; ok {
+			t.Errorf("self dependency %s remains in diet entries", purl)
+		}
+	}
+	for _, purl := range []string{requestsPURL, npmSameNamePURL} {
+		if _, ok := entries[purl]; !ok {
+			t.Errorf("non-Python-self dependency %s was filtered", purl)
+		}
+	}
+	for _, purl := range []string{selfPURL, projectPURL} {
+		if _, ok := sourceAnalyzer.importPaths[purl]; ok {
+			t.Errorf("self dependency %s reached source analysis", purl)
+		}
+	}
+	for _, purl := range []string{requestsPURL, npmSameNamePURL} {
+		if _, ok := sourceAnalyzer.importPaths[purl]; !ok {
+			t.Errorf("non-Python-self dependency %s was filtered before source analysis", purl)
+		}
+	}
+
+	slices.Sort(lookup.purls)
+	wantLookups := []string{npmSameNamePURL, requestsPURL}
+	slices.Sort(wantLookups)
+	if !slices.Equal(lookup.purls, wantLookups) {
+		t.Errorf("health lookup PURLs = %v, want %v", lookup.purls, wantLookups)
+	}
 }

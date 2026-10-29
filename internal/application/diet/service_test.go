@@ -35,6 +35,10 @@ func (s *stubSourceAnalyzer) AnalyzeCoupling(_ context.Context, _ string, import
 	return s.result, s.err
 }
 
+func (s *stubSourceAnalyzer) PyPIProjectNames(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
 // --- Tests ---
 
 func TestParsePURLParts(t *testing.T) {
@@ -729,6 +733,10 @@ func (s *retrySourceAnalyzer) AnalyzeCoupling(_ context.Context, _ string, _ map
 		return s.firstResult, nil
 	}
 	return s.secondResult, nil
+}
+
+func (s *retrySourceAnalyzer) PyPIProjectNames(context.Context, string) ([]string, error) {
+	return nil, nil
 }
 
 func TestRun_WheelFallback(t *testing.T) {

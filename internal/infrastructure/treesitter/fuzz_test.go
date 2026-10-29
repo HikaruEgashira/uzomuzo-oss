@@ -50,3 +50,19 @@ func FuzzAnalyzeJavaScriptRequire(f *testing.F) {
 		_, _ = analyzer.AnalyzeCoupling(context.Background(), dir, importPaths) // only panics and hangs matter here
 	})
 }
+
+func FuzzExtractPyPIProjectName(f *testing.F) {
+	for _, seed := range []string{
+		"[project]\nname = \"sample-project\"\n",
+		"[tool.poetry]\nname = \"ignored\"\n",
+		"[project]\nname = 'sample_project' # comment\n",
+		"",
+		"[project",
+	} {
+		f.Add([]byte(seed))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = extractPyPIProjectName(data)
+	})
+}

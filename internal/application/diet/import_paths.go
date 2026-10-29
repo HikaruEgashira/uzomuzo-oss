@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	domain "github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
 	"github.com/package-url/packageurl-go"
 )
 
@@ -38,6 +39,43 @@ func filterWorkspaceDeps(purls []string) []string {
 		filtered = append(filtered, p)
 	}
 	return filtered
+}
+
+func filterPyPIProjectDeps(purls []string, rootPURL string, projectNames []string) ([]string, []string) {
+	rootName := normalizePyPIPURLName(rootPURL)
+	projectNamesByNormalizedName := make(map[string]struct{}, len(projectNames))
+	for _, name := range projectNames {
+		if normalized := domain.NormalizePyPIName(name); normalized != "" {
+			projectNamesByNormalizedName[normalized] = struct{}{}
+		}
+	}
+
+	filtered := make([]string, 0, len(purls))
+	removed := make([]string, 0)
+	for _, purl := range purls {
+		parsed, err := packageurl.FromString(purl)
+		if err != nil || parsed.Type != "pypi" {
+			filtered = append(filtered, purl)
+			continue
+		}
+
+		name := domain.NormalizePyPIName(parsed.Name)
+		_, isProjectName := projectNamesByNormalizedName[name]
+		if name != "" && (name == rootName || isProjectName) {
+			removed = append(removed, purl)
+			continue
+		}
+		filtered = append(filtered, purl)
+	}
+	return filtered, removed
+}
+
+func normalizePyPIPURLName(rawPURL string) string {
+	parsed, err := packageurl.FromString(rawPURL)
+	if err != nil || parsed.Type != "pypi" {
+		return ""
+	}
+	return domain.NormalizePyPIName(parsed.Name)
 }
 
 // buildImportPaths creates a mapping from PURL to probable import paths.
