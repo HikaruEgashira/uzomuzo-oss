@@ -19,7 +19,10 @@ func ReadDependencyScopes(ctx context.Context, sourceRoot string) (tools, indire
 	}
 	tools, indirect = map[string]struct{}{}, map[string]struct{}{}
 	direct := map[string]struct{}{}
-	root := filepath.Clean(sourceRoot)
+	root, err := filepath.EvalSymlinks(sourceRoot)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve source root: %w", err)
+	}
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr

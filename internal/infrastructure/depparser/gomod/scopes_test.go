@@ -19,6 +19,21 @@ func TestReadDependencyScopesMultimodule(t *testing.T) {
 	}
 }
 
+func TestReadDependencyScopesSymlinkRoot(t *testing.T) {
+	root, err := filepath.Abs("testdata/multimodule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "source")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	tools, indirect, err := ReadDependencyScopes(context.Background(), link)
+	if err != nil || len(tools) != 1 || len(indirect) != 1 {
+		t.Fatalf("tools=%v indirect=%v err=%v", tools, indirect, err)
+	}
+}
+
 func TestReadDependencyScopesSkippedDirectoriesAndSymlinks(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"vendor", "testdata", "node_modules", ".hidden"} {
