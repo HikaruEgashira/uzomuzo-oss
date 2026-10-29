@@ -54,6 +54,7 @@ type dietJSONEntry struct {
 	APIBreadth        int      `json:"api_breadth"`
 	Symbols           []string `json:"symbols"`
 	IsUnused          bool     `json:"is_unused"`
+	CouplingAnalyzed  bool     `json:"coupling_analyzed"`
 	ImportFiles       []string `json:"import_files,omitempty"`
 	HasBlankImport    bool     `json:"has_blank_import"`
 	HasDotImport      bool     `json:"has_dot_import"`
@@ -118,6 +119,7 @@ func renderDietJSON(w io.Writer, plan *domaindiet.DietPlan) error {
 			APIBreadth:          e.Coupling.APIBreadth,
 			Symbols:             normalizeSymbols(e.Coupling.Symbols),
 			IsUnused:            e.Coupling.IsUnused,
+			CouplingAnalyzed:    !e.Coupling.Unanalyzed,
 			ImportFiles:         e.Coupling.ImportFiles,
 			HasBlankImport:      e.Coupling.HasBlankImport,
 			HasDotImport:        e.Coupling.HasDotImport,
@@ -158,6 +160,10 @@ func renderDietTable(w io.Writer, plan *domaindiet.DietPlan) error {
 		if e.Graph.StaysAsIndirect() {
 			stays = "yes"
 		}
+		status := e.Health.MaintenanceStatus
+		if e.Coupling.Unanalyzed {
+			status += " not analyzed (" + e.Ecosystem + ")"
+		}
 		tp.printf("%d\t%.2f\t%s\t%s\t%d\t%s\t%d\t%d\t%s\n",
 			e.Scores.Rank,
 			e.Scores.PriorityScore,
@@ -167,7 +173,7 @@ func renderDietTable(w io.Writer, plan *domaindiet.DietPlan) error {
 			stays,
 			e.Coupling.ImportFileCount,
 			e.Coupling.CallSiteCount,
-			e.Health.MaintenanceStatus,
+			strings.TrimSpace(status),
 		)
 	}
 	if tp.err != nil {
@@ -222,7 +228,9 @@ func renderDietDetailed(w io.Writer, plan *domaindiet.DietPlan) error {
 		}
 		p.printf("│\n")
 		p.printf("│  Coupling\n")
-		if e.Scope == domaindiet.ScopeTool {
+		if e.Coupling.Unanalyzed {
+			p.printf("│    Status: not analyzed (%s)\n", e.Ecosystem)
+		} else if e.Scope == domaindiet.ScopeTool {
 			p.printf("│    Status: TOOL (go.mod tool directive — not imported in source)\n")
 		} else if e.Scope == domaindiet.ScopeRuntime {
 			p.printf("│    Status: RUNTIME (reflection/ServiceLoader/classpath resources — not statically imported)\n")

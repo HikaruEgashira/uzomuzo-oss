@@ -253,11 +253,15 @@ func (s *Service) buildEntries(
 			entry.Graph = *m
 		}
 
-		if coupling != nil {
-			if c, ok := coupling[purl]; ok {
-				entry.Coupling = *c
-			} else {
-				entry.Coupling = domaindiet.CouplingAnalysis{IsUnused: true}
+		entry.Coupling.Unanalyzed = true
+		switch entry.Ecosystem {
+		case "golang", "pypi", "npm", "maven":
+			if coupling != nil {
+				if c := coupling[purl]; c != nil {
+					entry.Coupling = *c
+				} else {
+					entry.Coupling = domaindiet.CouplingAnalysis{IsUnused: true}
+				}
 			}
 		}
 
@@ -266,6 +270,7 @@ func (s *Service) buildEntries(
 		// not flagged as trivial removals, and provide a minimal synthetic
 		// coupling signal so downstream scoring does not treat them as zero-effort.
 		if entry.Scope == domaindiet.ScopeTool || entry.Scope == domaindiet.ScopeRuntime {
+			entry.Coupling.Unanalyzed = false
 			if entry.Coupling.IsUnused {
 				entry.Coupling.IsUnused = false
 			}

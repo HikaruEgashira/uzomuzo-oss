@@ -436,3 +436,19 @@ func TestComputeSummary_StaysAsIndirectCount(t *testing.T) {
 		t.Errorf("TotalDirect = %d, want 3", summary.TotalDirect)
 	}
 }
+
+func TestUnanalyzedCouplingDoesNotRecommendRemoval(t *testing.T) {
+	coupling := CouplingAnalysis{Unanalyzed: true, IsUnused: true}
+	graph := GraphMetrics{ExclusiveTransitiveCount: 20}
+	score := ComputeImpactScore(graph, coupling, HealthSignals{HealthRisk: 1, IsEOL: true}, 20)
+	if score.Difficulty != DifficultyUnknown || score.PriorityScore != 0 {
+		t.Fatalf("unknown coupling produced a removal score: %+v", score)
+	}
+	entry := DietEntry{Relation: RelationDirect, Coupling: coupling, Graph: graph,
+		Scores: ImpactScore{Difficulty: DifficultyTrivial, PriorityScore: 1}}
+	summary := ComputeSummary([]DietEntry{entry}, 20)
+	if summary.TotalDirect != 1 || summary.TotalExclusiveTransitive != 20 ||
+		summary.UnusedDirect != 0 || summary.EasyWins != 0 || summary.EstimatedRemovable != 0 {
+		t.Fatalf("unknown coupling affected removal totals: %+v", summary)
+	}
+}

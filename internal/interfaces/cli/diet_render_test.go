@@ -94,3 +94,33 @@ func TestRenderDietJSON_AlwaysSerializesZeroValueFields(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderDietUnanalyzedDependency(t *testing.T) {
+	plan := &domaindiet.DietPlan{Entries: []domaindiet.DietEntry{{
+		PURL: "pkg:gem/rails@7.0.0", Ecosystem: "gem",
+		Coupling: domaindiet.CouplingAnalysis{Unanalyzed: true},
+		Scores:   domaindiet.ImpactScore{Difficulty: domaindiet.DifficultyUnknown},
+	}}}
+	for _, format := range []string{"table", "detailed"} {
+		var out bytes.Buffer
+		if err := renderDietOutput(&out, plan, format); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "not analyzed (gem)") || !strings.Contains(out.String(), "unknown") {
+			t.Fatalf("missing unknown analysis state: %s", out.String())
+		}
+	}
+	var out bytes.Buffer
+	if err := renderDietJSON(&out, plan); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Entries []map[string]any `json:"dependencies"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Entries) != 1 || decoded.Entries[0]["coupling_analyzed"] != false || decoded.Entries[0]["is_unused"] != false {
+		t.Fatalf("incorrect JSON analysis status: %s", out.String())
+	}
+}
