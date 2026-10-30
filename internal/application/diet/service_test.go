@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -25,14 +28,33 @@ func (s *stubGraphAnalyzer) AnalyzeGraph(_ context.Context, _ []byte) (*domaindi
 }
 
 type stubSourceAnalyzer struct {
-	imports map[string][]string
-	result  map[string]*domaindiet.CouplingAnalysis
-	err     error
+	imports        map[string][]string
+	result         map[string]*domaindiet.CouplingAnalysis
+	commandUsed    map[string]struct{}
+	commandScripts map[string][]string
+	commandImports map[string][]string
+	commandErr     error
+	npmPeerDeps    map[string][]string
+	err            error
 }
 
 func (s *stubSourceAnalyzer) AnalyzeCoupling(_ context.Context, _ string, imports map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error) {
 	s.imports = imports
 	return s.result, s.err
+}
+
+func (s *stubSourceAnalyzer) PyPIProjectNames(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (s *stubSourceAnalyzer) AnalyzePyPICommandUsage(_ context.Context, _ string, scripts, imports map[string][]string) (map[string]struct{}, error) {
+	s.commandScripts = scripts
+	s.commandImports = imports
+	return s.commandUsed, s.commandErr
+}
+
+func (s *stubSourceAnalyzer) NpmPeerDependencies(context.Context, string, []string) (map[string][]string, error) {
+	return s.npmPeerDeps, nil
 }
 
 // --- Tests ---
@@ -123,6 +145,53 @@ func TestBuildImportPaths(t *testing.T) {
 	want := []string{"org.apache.commons"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("import paths for %s = %v, want %v", mavenPURL, got, want)
+	}
+}
+
+func TestBuildRubyImportPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		purl string
+		gem  string
+		want []string
+	}{
+		{
+			name: "factory_bot_rails maps its require and constants",
+			purl: "pkg:gem/factory_bot_rails@6.4.2",
+			gem:  "factory_bot_rails",
+			want: []string{"require:factory_bot_rails", "const:factorybotrails", "const:factorybot"},
+		},
+		{
+			name: "omniauth strategy maps nested require path",
+			purl: "pkg:gem/omniauth-google-oauth2@1.8.0",
+			gem:  "omniauth-google-oauth2",
+			want: []string{"require:omniauth-google-oauth2", "require:omniauth/google/oauth2", "const:omniauthgoogleoauth2"},
+		},
+		{
+			name: "simple gem keeps its name",
+			purl: "pkg:gem/mysql2@0.5.6",
+			gem:  "mysql2",
+			want: []string{"require:mysql2", "const:mysql2"},
+		},
+		{
+			name: "rails suffix also maps the base constant",
+			purl: "pkg:gem/sprockets-rails@3.5.2",
+			gem:  "sprockets-rails",
+			want: []string{"require:sprockets-rails", "const:sprocketsrails", "const:sprockets"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRubyImportPaths(tt.gem)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("buildRubyImportPaths(%s) = %v, want %v", tt.gem, got, tt.want)
+			}
+
+			gotMapKeys := buildImportPaths([]string{tt.purl})[tt.purl]
+			if !reflect.DeepEqual(gotMapKeys, tt.want) {
+				t.Errorf("buildImportPaths(%s) = %v, want %v", tt.purl, gotMapKeys, tt.want)
+			}
+		})
 	}
 }
 
@@ -704,15 +773,26 @@ func TestRun_NoSourceAnalyzer(t *testing.T) {
 // --- Phase 2.5 wheel fallback tests ---
 
 type stubPyPIResolver struct {
-	names map[string][]string // packageName → import names
-	err   error
+	names        map[string][]string // packageName → import names from wheel metadata
+	localNames   map[string][]string // packageName → import names from source virtualenv
+	scripts      map[string][]string // packageName → console scripts from wheel metadata
+	localScripts map[string][]string // packageName → console scripts from source virtualenv
+	err          error
+	localCalls   int
+	remoteCalls  int
 }
 
-func (s *stubPyPIResolver) ResolveImportNames(_ context.Context, name string) ([]string, error) {
+func (s *stubPyPIResolver) ResolveLocalDistributionMetadata(_ context.Context, _ string, name string) ([]string, []string, error) {
+	s.localCalls++
+	return s.localNames[name], s.localScripts[name], nil
+}
+
+func (s *stubPyPIResolver) ResolveDistributionMetadata(_ context.Context, name string) ([]string, []string, error) {
+	s.remoteCalls++
 	if s.err != nil {
-		return nil, s.err
+		return nil, nil, s.err
 	}
-	return s.names[name], nil
+	return s.names[name], s.scripts[name], nil
 }
 
 // retrySourceAnalyzer returns different results on the first vs second call.
@@ -729,6 +809,18 @@ func (s *retrySourceAnalyzer) AnalyzeCoupling(_ context.Context, _ string, _ map
 		return s.firstResult, nil
 	}
 	return s.secondResult, nil
+}
+
+func (s *retrySourceAnalyzer) PyPIProjectNames(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (s *retrySourceAnalyzer) AnalyzePyPICommandUsage(context.Context, string, map[string][]string, map[string][]string) (map[string]struct{}, error) {
+	return nil, nil
+}
+
+func (s *retrySourceAnalyzer) NpmPeerDependencies(context.Context, string, []string) (map[string][]string, error) {
+	return nil, nil
 }
 
 func TestRun_WheelFallback(t *testing.T) {
@@ -852,6 +944,33 @@ func TestRun_WheelFallback_NilCouplingResults(t *testing.T) {
 	t.Fatal("beautifulsoup4 entry not found in plan")
 }
 
+func TestRun_WheelFallback_UsesLocalMetadataBeforeNetwork(t *testing.T) {
+	t.Parallel()
+
+	pypiPURL := "pkg:pypi/private-server@1.0.0"
+	graphResult := &domaindiet.GraphResult{DirectDeps: []string{pypiPURL}}
+	sourceAnalyzer := &retrySourceAnalyzer{
+		firstResult:  map[string]*domaindiet.CouplingAnalysis{},
+		secondResult: map[string]*domaindiet.CouplingAnalysis{pypiPURL: {ImportFileCount: 1}},
+	}
+	resolver := &stubPyPIResolver{localNames: map[string][]string{"private-server": {"private_api"}}}
+	svc := NewService(&stubGraphAnalyzer{result: graphResult}, sourceAnalyzer, resolver, nil)
+
+	plan, err := svc.Run(context.Background(), DietInput{SourceRoot: "/tmp/src"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver.localCalls != 1 || resolver.remoteCalls != 0 {
+		t.Fatalf("resolver calls = local %d, remote %d; want local 1 and remote 0", resolver.localCalls, resolver.remoteCalls)
+	}
+	if sourceAnalyzer.callCount.Load() != 2 {
+		t.Fatalf("AnalyzeCoupling call count = %d, want 2", sourceAnalyzer.callCount.Load())
+	}
+	if got := plan.Entries[0].Coupling; got.Unanalyzed || got.IsUnused || got.ImportFileCount != 1 {
+		t.Fatalf("coupling = %+v, want analyzed local import", got)
+	}
+}
+
 func TestRun_WheelFallback_NilResolver(t *testing.T) {
 	t.Parallel()
 
@@ -890,8 +1009,8 @@ func TestRun_WheelFallback_NilResolver(t *testing.T) {
 	for _, entry := range plan.Entries {
 		if entry.PURL == pypiPURL {
 			found = true
-			if !entry.Coupling.IsUnused {
-				t.Error("without resolver, beautifulsoup4 should stay unused")
+			if !entry.Coupling.Unanalyzed || entry.Coupling.IsUnused {
+				t.Errorf("without resolver, coupling = %+v, want unanalyzed and not unused", entry.Coupling)
 			}
 		}
 	}
@@ -937,13 +1056,13 @@ func TestRun_WheelFallback_ResolverError(t *testing.T) {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	// Should gracefully degrade — beautifulsoup4 stays unused
+	// A failed wheel lookup cannot establish whether this distribution is unused.
 	found := false
 	for _, entry := range plan.Entries {
 		if entry.PURL == pypiPURL {
 			found = true
-			if !entry.Coupling.IsUnused {
-				t.Error("on resolver error, beautifulsoup4 should stay unused")
+			if !entry.Coupling.Unanalyzed || entry.Coupling.IsUnused {
+				t.Errorf("on resolver error, coupling = %+v, want unanalyzed and not unused", entry.Coupling)
 			}
 		}
 	}
@@ -991,8 +1110,43 @@ func TestRun_RuntimeDepsNotFlaggedAsUnused(t *testing.T) {
 			wantAPIBreadth: 1,
 		},
 		{
+			name:           "Rails framework recognized as runtime",
+			purl:           "pkg:gem/rails@8.0.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "Minitest recognized as runtime",
+			purl:           "pkg:gem/minitest@5.25.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "RSpec on Rails recognized as runtime",
+			purl:           "pkg:gem/rspec-rails@7.1.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "Rubocop extension recognized by prefix",
+			purl:           "pkg:gem/rubocop-performance@1.24.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
 			name:           "Non-runtime Maven dep unaffected",
 			purl:           "pkg:maven/com.google.guava/guava@33.0.0",
+			wantScope:      "",
+			wantIsUnused:   true,
+			wantAPIBreadth: 0,
+		},
+		{
+			name:           "Non-runtime gem unaffected",
+			purl:           "pkg:gem/acme_gem@1.0.0",
 			wantScope:      "",
 			wantIsUnused:   true,
 			wantAPIBreadth: 0,
@@ -1003,6 +1157,34 @@ func TestRun_RuntimeDepsNotFlaggedAsUnused(t *testing.T) {
 			wantScope:      "",
 			wantIsUnused:   true,
 			wantAPIBreadth: 0,
+		},
+		{
+			name:           "Uvicorn CLI server recognized as runtime",
+			purl:           "pkg:pypi/uvicorn@0.30.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "SQLAlchemy async driver recognized as runtime",
+			purl:           "pkg:pypi/aiomysql@0.2.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "greenlet runtime dependency recognized",
+			purl:           "pkg:pypi/greenlet@3.0.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
+		},
+		{
+			name:           "pytest plugin prefix recognized as runtime",
+			purl:           "pkg:pypi/pytest-cov@5.0.0",
+			wantScope:      domaindiet.ScopeRuntime,
+			wantIsUnused:   false,
+			wantAPIBreadth: 1,
 		},
 	}
 
@@ -1061,8 +1243,92 @@ func TestRun_RuntimeDepsNotFlaggedAsUnused(t *testing.T) {
 	}
 }
 
+func TestRun_RequiredNpmPeerInheritsUsedDirectHost(t *testing.T) {
+	t.Parallel()
+	const (
+		next         = "pkg:npm/next@14.0.0"
+		reactDOM     = "pkg:npm/react-dom@18.0.0"
+		optionalPeer = "pkg:npm/optional-adapter@1.0.0"
+	)
+	source := &stubSourceAnalyzer{
+		result: map[string]*domaindiet.CouplingAnalysis{
+			next:         {ImportFileCount: 2, CallSiteCount: 4, APIBreadth: 3},
+			reactDOM:     {IsUnused: true},
+			optionalPeer: {IsUnused: true},
+		},
+		npmPeerDeps: map[string][]string{next: {"react-dom"}},
+	}
+	service := NewService(
+		&stubGraphAnalyzer{result: &domaindiet.GraphResult{DirectDeps: []string{next, reactDOM, optionalPeer}}},
+		source, nil, nil,
+	)
+	plan, err := service.Run(context.Background(), DietInput{SourceRoot: t.TempDir(), Offline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make(map[string]domaindiet.DietEntry, len(plan.Entries))
+	for _, entry := range plan.Entries {
+		entries[entry.PURL] = entry
+	}
+	peer := entries[reactDOM]
+	if peer.Scope != domaindiet.ScopePeer || peer.PeerRequiredBy != "next" || peer.Coupling.IsUnused || peer.Coupling.Unanalyzed {
+		t.Fatalf("required peer = %+v", peer)
+	}
+	if peer.Scores.CouplingEffort != entries[next].Scores.CouplingEffort || peer.Scores.Difficulty != entries[next].Scores.Difficulty {
+		t.Fatalf("peer effort=%+v, host effort=%+v", peer.Scores, entries[next].Scores)
+	}
+	if optional := entries[optionalPeer]; optional.Scope != "" || !optional.Coupling.IsUnused {
+		t.Fatalf("optional peer = %+v, want unused candidate", optional)
+	}
+}
+
+func TestRun_PyPIRuntimeConfigDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte("serve:\n\tuv run uvicorn app:app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "settings.py"), []byte("DATABASE_URL = 'mysql+aiomysql://db/app'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	purls := []string{"pkg:pypi/uvicorn@0.30.0", "pkg:pypi/aiomysql@0.2.0"}
+	svc := NewService(
+		&stubGraphAnalyzer{result: &domaindiet.GraphResult{DirectDeps: purls}},
+		&stubSourceAnalyzer{result: map[string]*domaindiet.CouplingAnalysis{}}, nil, nil,
+	)
+	plan, err := svc.Run(context.Background(), DietInput{SourceRoot: root, Offline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range plan.Entries {
+		if entry.Scope != domaindiet.ScopeRuntime || entry.Coupling.IsUnused {
+			t.Errorf("entry %s = %+v, want runtime and not unused", entry.PURL, entry)
+		}
+	}
+}
+
+func TestIsPyPIRuntimeDep(t *testing.T) {
+	for _, name := range []string{
+		"uvicorn", "gunicorn", "hypercorn", "daphne",
+		"aiomysql", "asyncmy", "pymysql", "mysqlclient", "psycopg", "psycopg2",
+		"psycopg2-binary", "asyncpg", "aiosqlite", "greenlet",
+		"ruff", "mypy", "black", "pre-commit", "pytest", "pytest-cov",
+	} {
+		if !isPyPIRuntimeDep(name) {
+			t.Errorf("isPyPIRuntimeDep(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"requests", "pytestish", "ruffy"} {
+		if isPyPIRuntimeDep(name) {
+			t.Errorf("isPyPIRuntimeDep(%q) = true", name)
+		}
+	}
+	if !isPyPIRuntimeDep("PyTest_Cov") {
+		t.Error("isPyPIRuntimeDep should normalize PEP 503 separators and case")
+	}
+}
+
 func TestRunUnsupportedEcosystemsAreNotRemovalCandidates(t *testing.T) {
-	for _, purl := range []string{"pkg:gem/rails@7.0.0", "pkg:nuget/Example@1.0.0"} {
+	for _, purl := range []string{"pkg:nuget/Example@1.0.0"} {
 		t.Run(purl, func(t *testing.T) {
 			svc := NewService(&stubGraphAnalyzer{result: &domaindiet.GraphResult{
 				DirectDeps: []string{purl},
@@ -1098,6 +1364,12 @@ func TestRunCouplingAvailability(t *testing.T) {
 					t.Fatal(err)
 				}
 				entry := plan.Entries[0]
+				if strings.HasPrefix(purl, "pkg:pypi/") {
+					if !entry.Coupling.Unanalyzed || entry.Coupling.IsUnused {
+						t.Fatalf("unresolved PyPI dependency should remain unanalyzed: %+v", entry.Coupling)
+					}
+					return
+				}
 				if entry.Coupling.Unanalyzed == available || entry.Coupling.IsUnused != available {
 					t.Fatalf("incorrect analysis availability: %+v", entry.Coupling)
 				}

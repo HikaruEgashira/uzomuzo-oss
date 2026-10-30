@@ -33,7 +33,7 @@ type Client struct {
 	cache        ttlcache.Cache[*ProjectInfo]
 	versionCache ttlcache.Cache[*VersionInfo] // key: "name@version" (lowercased name)
 
-	importCacheFields // wheel-based import name cache (zero value usable)
+	importCacheFields // wheel-based import/console-script metadata caches (zero value usable)
 }
 
 // NewClient returns a PyPI client with sensible HTTP defaults.
@@ -46,6 +46,7 @@ func NewClient() *Client { // nolint: revive
 	c.cache.SetTTL(10 * time.Minute)
 	c.versionCache.SetTTL(10 * time.Minute)
 	c.importCache.SetTTL(10 * time.Minute)
+	c.consoleScriptCache.SetTTL(10 * time.Minute)
 	return c
 }
 
@@ -76,11 +77,12 @@ func (c *Client) SetRetryConfig(cfg httpclient.RetryConfig) {
 func (c *Client) SetBaseURL(u string) { c.baseURL = strings.TrimRight(u, "/") }
 
 // SetCacheTTL sets the in-memory cache TTL (<=0 disables caching).
-// Fans the same TTL to all caches (project, version, and wheel import names).
+// Fans the same TTL to all caches (project, version, and wheel metadata).
 func (c *Client) SetCacheTTL(d time.Duration) {
 	c.cache.SetTTL(d)
 	c.versionCache.SetTTL(d)
 	c.importCache.SetTTL(d)
+	c.consoleScriptCache.SetTTL(d)
 }
 
 // resolvedBaseURL returns the configured base URL or the default.

@@ -44,3 +44,20 @@ func FuzzEarlierUpload(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseConsoleScriptsData(f *testing.F) {
+	f.Add([]byte("[console_scripts]\nuvicorn = module:main\n[gui_scripts]\nweb = module:main\n"))
+	f.Add([]byte("[console_scripts]\ninvalid name = module:main\nuvicorn = module:main\nuvicorn = other:main\n"))
+	f.Add([]byte("not an ini file\n[console_scripts\nfoo = bar:baz"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		scripts := parseConsoleScriptsData(data)
+		for i, script := range scripts {
+			if !isConsoleScriptName(script) {
+				t.Fatalf("unsafe console script name %q", script)
+			}
+			if i > 0 && scripts[i-1] >= script {
+				t.Fatalf("scripts are not strictly sorted: %v", scripts)
+			}
+		}
+	})
+}

@@ -2,11 +2,13 @@ package diet
 
 // Scope constants for DietEntry.Scope.
 const (
-	// ScopeTool indicates a Go tool directive dependency (Go 1.24+).
-	// Tool deps are dev/CI executables that intentionally have zero source imports.
+	// ScopeTool indicates a declared tool or a console script used by the project.
+	// These executables intentionally may have zero source imports.
 	ScopeTool = "tool"
 	// ScopeTypes indicates a TypeScript declaration dependency.
 	ScopeTypes = "types"
+	// ScopePeer indicates a required npm peer dependency of a used direct host.
+	ScopePeer = "peer"
 
 	// ScopeRuntime indicates a dependency loaded via runtime mechanisms
 	// (reflection, ServiceLoader, classpath resources) rather than static imports.
@@ -18,12 +20,13 @@ const (
 
 // DietEntry represents a single dependency's removability analysis.
 type DietEntry struct {
-	PURL      string
-	Name      string
-	Ecosystem string
-	Version   string
-	Relation  string // "direct" or "transitive"
-	Scope     string // "" (default), "tool" (Go tool directive), "types" (TypeScript declarations), or "runtime" (reflection or classpath resources)
+	PURL           string
+	Name           string
+	Ecosystem      string
+	Version        string
+	Relation       string // "direct" or "transitive"
+	Scope          string // "" (default), "tool", "types", "peer", or "runtime".
+	PeerRequiredBy string // npm host package requiring this peer, when ScopePeer.
 
 	Graph    GraphMetrics
 	Coupling CouplingAnalysis
@@ -35,6 +38,7 @@ type DietEntry struct {
 type GraphResult struct {
 	DirectDeps      []string
 	AllDeps         []string
+	RootPURL        string // PURL from CycloneDX metadata.component, when present.
 	Metrics         map[string]*GraphMetrics
 	DisplayNames    map[string]string // normalized PURL to original SBOM name
 	TotalTransitive int

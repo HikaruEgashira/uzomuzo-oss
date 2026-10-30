@@ -7,7 +7,13 @@ import (
 	"log/slog"
 	"strings"
 
+	domain "github.com/future-architect/uzomuzo-oss/internal/domain/analysis"
 	"github.com/package-url/packageurl-go"
+)
+
+const (
+	rubyRequireKeyPrefix  = "require:"
+	rubyConstantKeyPrefix = "const:"
 )
 
 // isWorkspaceDep returns true if the PURL represents a local workspace package
@@ -38,6 +44,43 @@ func filterWorkspaceDeps(purls []string) []string {
 		filtered = append(filtered, p)
 	}
 	return filtered
+}
+
+func filterPyPIProjectDeps(purls []string, rootPURL string, projectNames []string) ([]string, []string) {
+	rootName := normalizePyPIPURLName(rootPURL)
+	projectNamesByNormalizedName := make(map[string]struct{}, len(projectNames))
+	for _, name := range projectNames {
+		if normalized := domain.NormalizePyPIName(name); normalized != "" {
+			projectNamesByNormalizedName[normalized] = struct{}{}
+		}
+	}
+
+	filtered := make([]string, 0, len(purls))
+	removed := make([]string, 0)
+	for _, purl := range purls {
+		parsed, err := packageurl.FromString(purl)
+		if err != nil || parsed.Type != "pypi" {
+			filtered = append(filtered, purl)
+			continue
+		}
+
+		name := domain.NormalizePyPIName(parsed.Name)
+		_, isProjectName := projectNamesByNormalizedName[name]
+		if name != "" && (name == rootName || isProjectName) {
+			removed = append(removed, purl)
+			continue
+		}
+		filtered = append(filtered, purl)
+	}
+	return filtered, removed
+}
+
+func normalizePyPIPURLName(rawPURL string) string {
+	parsed, err := packageurl.FromString(rawPURL)
+	if err != nil || parsed.Type != "pypi" {
+		return ""
+	}
+	return domain.NormalizePyPIName(parsed.Name)
 }
 
 // buildImportPaths creates a mapping from PURL to probable import paths.
@@ -74,6 +117,11 @@ func buildImportPaths(purls []string) map[string][]string {
 				result[p] = paths
 			}
 			continue
+		case "gem":
+			if paths := buildRubyImportPaths(parsed.Name); len(paths) > 0 {
+				result[p] = paths
+			}
+			continue
 		default:
 			importPath = parsed.Name
 		}
@@ -82,6 +130,41 @@ func buildImportPaths(purls []string) map[string][]string {
 		}
 	}
 	return result
+}
+
+// buildRubyImportPaths keeps require paths distinct from constant names.
+func buildRubyImportPaths(name string) []string {
+	lower := strings.ToLower(name)
+	seen := make(map[string]struct{})
+	paths := make([]string, 0, 4)
+	add := func(kindPrefix, path string) {
+		if path == "" {
+			return
+		}
+		key := kindPrefix + path
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		paths = append(paths, key)
+	}
+
+	add(rubyRequireKeyPrefix, lower)
+	if lower == "omniauth-google-oauth2" {
+		add(rubyRequireKeyPrefix, "omniauth/google/oauth2")
+	}
+	add(rubyConstantKeyPrefix, normalizeRubyConstantName(lower))
+	if base, ok := strings.CutSuffix(lower, "_rails"); ok {
+		add(rubyConstantKeyPrefix, normalizeRubyConstantName(base))
+	}
+	if base, ok := strings.CutSuffix(lower, "-rails"); ok {
+		add(rubyConstantKeyPrefix, normalizeRubyConstantName(base))
+	}
+	return paths
+}
+
+func normalizeRubyConstantName(name string) string {
+	return strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(name))
 }
 
 // pypiPrefixes lists common PyPI distribution name prefixes that are not part
@@ -289,6 +372,39 @@ var mavenRuntimeDeps = map[string]struct{}{
 	"org.webjars/webjars-locator-core": {},
 	"org.webjars/jquery":               {},
 	"org.webjars.npm/htmx.org":         {},
+}
+
+var pypiRuntimeDeps = map[string]struct{}{
+	"uvicorn": {}, "gunicorn": {}, "hypercorn": {}, "daphne": {},
+	"aiomysql": {}, "asyncmy": {}, "pymysql": {}, "mysqlclient": {},
+	"psycopg": {}, "psycopg2": {}, "psycopg2-binary": {}, "asyncpg": {}, "aiosqlite": {},
+	"greenlet": {}, "ruff": {}, "mypy": {}, "black": {}, "pre-commit": {},
+}
+
+func isPyPIRuntimeDep(name string) bool {
+	name = domain.NormalizePyPIName(name)
+	if name == "pytest" || strings.HasPrefix(name, "pytest-") {
+		return true
+	}
+	_, ok := pypiRuntimeDeps[name]
+	return ok
+}
+
+var rubyRuntimeDeps = map[string]struct{}{
+	"mysql2": {}, "pg": {}, "sqlite3": {}, "trilogy": {},
+	"rails": {}, "minitest": {}, "rspec-rails": {},
+	"puma": {}, "unicorn": {}, "bootsnap": {}, "sprockets-rails": {},
+	"tzinfo-data": {}, "listen": {}, "spring": {}, "web-console": {},
+	"debug": {}, "byebug": {}, "pry-rails": {}, "dotenv-rails": {},
+	"rubocop": {}, "danger": {}, "brakeman": {}, "bundler-audit": {}, "syntax_tree": {},
+}
+
+func isRubyRuntimeDep(name string) bool {
+	lower := strings.ToLower(name)
+	if _, ok := rubyRuntimeDeps[lower]; ok {
+		return true
+	}
+	return strings.HasPrefix(lower, "rubocop-") || strings.HasPrefix(lower, "danger-")
 }
 
 // buildMavenImportPaths generates candidate import path prefixes for a Maven PURL.

@@ -124,3 +124,38 @@ func TestRenderDietUnanalyzedDependency(t *testing.T) {
 		t.Fatalf("incorrect JSON analysis status: %s", out.String())
 	}
 }
+
+func TestRenderDietPeerRequiredByHost(t *testing.T) {
+	plan := &domaindiet.DietPlan{Entries: []domaindiet.DietEntry{{
+		PURL: "pkg:npm/react-dom@18.0.0", Name: "react-dom", Version: "18.0.0", Ecosystem: "npm",
+		Scope: domaindiet.ScopePeer, PeerRequiredBy: "next",
+		Scores: domaindiet.ImpactScore{Difficulty: domaindiet.DifficultyModerate, CouplingEffort: 0.4},
+	}}}
+
+	for _, format := range []string{"table", "detailed"} {
+		var out bytes.Buffer
+		if err := renderDietOutput(&out, plan, format); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "PEER (required by next)") {
+			t.Fatalf("%s output missing peer status: %s", format, out.String())
+		}
+	}
+
+	var out bytes.Buffer
+	if err := renderDietJSON(&out, plan); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Entries []struct {
+			Scope          string `json:"scope"`
+			PeerRequiredBy string `json:"peer_required_by"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Entries) != 1 || decoded.Entries[0].Scope != domaindiet.ScopePeer || decoded.Entries[0].PeerRequiredBy != "next" {
+		t.Fatalf("peer JSON = %s", out.String())
+	}
+}

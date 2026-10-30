@@ -104,9 +104,11 @@ func (a *Analyzer) AnalyzeGraph(_ context.Context, sbomData []byte) (*domaindiet
 	sort.Strings(allDepList)
 
 	// Total transitive = all deps minus direct deps minus root component
+	rootComponentPURL := ""
 	rootPURL := ""
 	if bom.Metadata != nil && bom.Metadata.Component != nil && bom.Metadata.Component.PURL != "" {
-		rootPURL = sbomgraph.NormalizePURL(bom.Metadata.Component.PURL)
+		rootComponentPURL = bom.Metadata.Component.PURL
+		rootPURL = sbomgraph.NormalizePURL(rootComponentPURL)
 	}
 	totalTransitive := 0
 	for p := range allPURLs {
@@ -123,6 +125,7 @@ func (a *Analyzer) AnalyzeGraph(_ context.Context, sbomData []byte) (*domaindiet
 	return &domaindiet.GraphResult{
 		DirectDeps:      directList,
 		AllDeps:         allDepList,
+		RootPURL:        rootComponentPURL,
 		Metrics:         metrics,
 		DisplayNames:    displayNames,
 		TotalTransitive: totalTransitive,

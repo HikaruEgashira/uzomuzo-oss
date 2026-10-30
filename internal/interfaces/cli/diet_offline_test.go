@@ -16,6 +16,16 @@ import (
 
 type denyDietTransport struct{ calls atomic.Int32 }
 
+type localDietMetadataRecorder struct {
+	*pypi.Client
+	localCalls atomic.Int32
+}
+
+func (r *localDietMetadataRecorder) ResolveLocalDistributionMetadata(ctx context.Context, root, name string) ([]string, []string, error) {
+	r.localCalls.Add(1)
+	return r.Client.ResolveLocalDistributionMetadata(ctx, root, name)
+}
+
 func (r *denyDietTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	r.calls.Add(1)
 	return nil, fmt.Errorf("unexpected offline HTTP request")
@@ -33,16 +43,32 @@ func TestRunDietOfflineMakesNoRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := emptyDietSource{}
-	if err := RunDiet(context.Background(), nil, DietOptions{SBOMPath: path, SourceRoot: root, Format: "json", Offline: true}, depgraph.NewAnalyzer(), source, pypi.NewClient()); err != nil {
+	resolver := &localDietMetadataRecorder{Client: pypi.NewClient()}
+	if err := RunDiet(context.Background(), nil, DietOptions{SBOMPath: path, SourceRoot: root, Format: "json", Offline: true}, depgraph.NewAnalyzer(), source, resolver); err != nil {
 		t.Fatal(err)
 	}
 	if got := transport.calls.Load(); got != 0 {
 		t.Fatalf("offline HTTP requests=%d", got)
+	}
+	if resolver.localCalls.Load() == 0 {
+		t.Fatal("offline mode must still read local distribution metadata")
 	}
 }
 
 type emptyDietSource struct{}
 
 func (emptyDietSource) AnalyzeCoupling(context.Context, string, map[string][]string) (map[string]*domaindiet.CouplingAnalysis, error) {
+	return nil, nil
+}
+
+func (emptyDietSource) PyPIProjectNames(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (emptyDietSource) AnalyzePyPICommandUsage(context.Context, string, map[string][]string, map[string][]string) (map[string]struct{}, error) {
+	return nil, nil
+}
+
+func (emptyDietSource) NpmPeerDependencies(context.Context, string, []string) (map[string][]string, error) {
 	return nil, nil
 }
